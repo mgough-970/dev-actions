@@ -102,12 +102,7 @@ jobs:
     - name: Install Dependencies
       run: |
         pip install jupyter nbval nbconvert bandit
-
-    - name: Validate Notebook
-      run: |
-        pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
-
-    - name: Execute Notebook
+    - name: Install Local Requirements
       run: |
         ipynb_file="${{ matrix.notebook }}"
         nb_dir=$(dirname "$ipynb_file")
@@ -119,7 +114,16 @@ jobs:
         else
           echo "No local requirements.txt for $ipynb_file"
         fi
-    
+        
+    - name: Validate Notebook
+      run: |
+        pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
+
+    - name: Execute Notebook
+      run: |
+        ipynb_file="${{ matrix.notebook }}"
+        nb_dir=$(dirname "$ipynb_file")
+
         # Now execute
         jupyter nbconvert --to notebook --execute --inplace "$ipynb_file"
 
