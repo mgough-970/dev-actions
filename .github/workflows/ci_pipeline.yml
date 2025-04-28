@@ -198,7 +198,8 @@ jobs:
       if: inputs.use-conda == true
       shell: bash -l {0}
       run: |
-        echo "Activating ci_env"
+        echo "Activating conda environment ci_env"
+        eval "$(conda shell.bash hook)"
         conda activate ci_env
         pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
 
@@ -212,7 +213,8 @@ jobs:
       if: inputs.use-conda == true
       shell: bash -l {0}
       run: |
-        echo "Activating ci_env"
+        echo "Activating conda environment ci_env"
+        eval "$(conda shell.bash hook)"
         conda activate ci_env
         jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
 
