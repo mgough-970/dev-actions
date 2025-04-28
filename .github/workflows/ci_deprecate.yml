@@ -1,0 +1,90 @@
+name: Deprecation Manager
+
+on:
+  workflow_call:
+    inputs:
+      notebook-path:
+        required: false
+        type: string
+      removal-date:
+        required: false
+        type: string
+    secrets:
+      github-token:
+        required: true
+
+  schedule:
+    - cron: '0 3 * * *'  # Every night at 3AM UTC
+
+jobs:
+  manual-deprecate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Mark Notebook as Deprecated
+      run: |
+        NOTEBOOK="${{ inputs.notebook-path }}"
+        REMOVAL_DATE="${{ inputs.removal-date }}"
+
+        if [[ -z "$NOTEBOOK" || -z "$REMOVAL_DATE" ]]; then
+          echo "Notebook path and removal date must be provided."
+          exit 1
+        fi
+
+        echo "Adding deprecation banner to $NOTEBOOK"
+
+        # Insert a Markdown cell warning users
+        jq --arg date "$REMOVAL_DATE" \
+          '.cells |= [{"cell_type":"markdown","metadata":{},"source":["⚠️ **DEPRECATED**: This notebook is scheduled for removal on \($date).\n"]}] + .' \
+          "$NOTEBOOK" > temp.json && mv temp.json "$NOTEBOOK"
+
+        # Add metadata
+        jq '.metadata.deprecated = {"status": true, "removal_date": "'"$REMOVAL_DATE"'"}' "$NOTEBOOK" > temp.json && mv temp.json "$NOTEBOOK"
+
+    - name: Commit Deprecation Changes
+      run: |
+        git config --global user.name "CI Bot"
+        git config --global user.email "ci-bot@example.com"
+        git add ${{ inputs.notebook-path }}
+        git commit -m "Manually deprecated ${{ inputs.notebook-path }}"
+        git push origin gh-storage
+      env:
+        GITHUB_TOKEN: ${{ secrets.github-token }}
+
+  move-expired-deprecations:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Move expired notebooks
+      run: |
+        CURRENT_DATE=$(date -u +"%Y-%m-%d")
+        mkdir -p deprecated_notebooks/
+
+        for nb in $(find notebooks/ -name '*.ipynb'); do
+          REMOVAL_DATE=$(jq -r '.metadata.deprecated.removal_date // empty' "$nb")
+          if [[ ! -z "$REMOVAL_DATE" && "$REMOVAL_DATE" < "$CURRENT_DATE" ]]; then
+            echo "Moving expired notebook: $nb"
+            mv "$nb" "deprecated_notebooks/$(basename "$nb")"
+          fi
+        done
+
+        if [[ "$(ls -A deprecated_notebooks)" ]]; then
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci-bot@example.com"
+          git add deprecated_notebooks/
+          git rm $(find notebooks/ -name '*.ipynb' -path 'deprecated_notebooks/*' -prune -o -print)
+          git commit -m "Auto-move expired deprecated notebooks"
+          git push origin gh-storage
+        else
+          echo "No expired notebooks found."
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.github-token }}
