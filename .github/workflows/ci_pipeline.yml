@@ -40,38 +40,62 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      changed_notebooks: ${{ steps.changed.outputs.changed_notebooks }}
-      dependencies_changed: ${{ steps.changed.outputs.dependencies_changed }}
-      static_changed: ${{ steps.changed.outputs.static_changed }}
+      notebooks_json: ${{ steps.set.outputs.notebooks_json }}
+      dependencies_changed: ${{ steps.set.outputs.dependencies_changed }}
+      static_changed: ${{ steps.set.outputs.static_changed }}
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    - id: changed
+    - id: set
       run: |
-        git fetch origin main
-    
-        NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb' | jq -R . | jq -s .)
-    
-        DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
-        STATIC=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
-    
-        echo "changed_notebooks<<EOF" >> $GITHUB_OUTPUT
+        echo "Gathering notebooks list based on mode..."
+
+        if [[ "${{ github.event_name }}" == "pull_request" && "${{ inputs.execution-mode }}" == "changed" ]]; then
+          echo "PR + changed mode detected."
+          NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb' | jq -R . | jq -s .)
+        elif [[ "${{ inputs.execution-mode }}" == "all" ]]; then
+          echo "Manual run: all notebooks mode."
+          NOTEBOOKS=$(find notebooks/ -name '*.ipynb' | jq -R . | jq -s .)
+        elif [[ "${{ inputs.execution-mode }}" == "single" ]]; then
+          echo "Manual run: single notebook mode."
+          NOTEBOOK_PATH=$(find notebooks/ -name "${{ inputs.single-filename }}" | head -n 1)
+          if [[ -z "$NOTEBOOK_PATH" ]]; then
+            echo "ERROR: Single notebook '${{ inputs.single-filename }}' not found."
+            exit 1
+          fi
+          NOTEBOOKS=$(echo "$NOTEBOOK_PATH" | jq -R . | jq -s .)
+        else
+          echo "ERROR: Invalid execution mode or unsupported event."
+          exit 1
+        fi
+
+        echo "Discovered notebooks:"
+        echo "$NOTEBOOKS"
+
+        # Always output a JSON array, even if empty
+        echo "notebooks_json<<EOF" >> $GITHUB_OUTPUT
         echo "$NOTEBOOKS" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
-    
+
+        # Detect if requirements.txt or environment.yml changed (only important for PRs)
+        DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
         echo "dependencies_changed=$([[ -n \"$DEPS\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+        # Detect if static content changed (for triggering site rebuild)
+        STATIC=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
         echo "static_changed=$([[ -n \"$STATIC\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
 
 
   validate-and-execute:
     needs: detect-changes
     runs-on: ubuntu-latest
-    if: ${{ needs.detect-changes.outputs.changed_notebooks != '' || needs.detect-changes.outputs.dependencies_changed == 'true' }}
+    if: ${{ needs.detect-changes.outputs.notebooks_json != '[]' }}
     strategy:
       matrix:
-        notebook: ${{ fromJson(needs.detect-changes.outputs.changed_notebooks || '[]') }}
+        notebook: ${{ fromJson(needs.detect-changes.outputs.notebooks_json) }}
       fail-fast: false
       max-parallel: 4
     steps:
@@ -84,48 +108,45 @@ jobs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Conda Setup (if requested)
-      if: inputs.use-conda == true
-      run: |
-        source /usr/share/miniconda/etc/profile.d/conda.sh
-        conda init bash
-        if [[ "${{ inputs.conda-environment-file }}" != "" ]]; then
-          conda env create -f "${{ inputs.conda-environment-file }}" -n custom-env
-        else
-          conda create --yes -n custom-env python=${{ inputs.python-version }}
-          conda activate custom-env
-          if [[ "${{ inputs.conda-packages }}" != "" ]]; then
-            conda install --yes -c conda-forge $(echo "${{ inputs.conda-packages }}" | tr ',' ' ')
-          fi
-        fi
-
-    - name: Install Dependencies
+    - name: Install Validation Dependencies
       run: |
         pip install jupyter nbval nbconvert bandit
+
     - name: Install Local Requirements
       run: |
         ipynb_file="${{ matrix.notebook }}"
         nb_dir=$(dirname "$ipynb_file")
-    
-        # If there is a requirements.txt in the notebook's folder, install it
+
         if [ -f "$nb_dir/requirements.txt" ]; then
           echo "Installing local requirements for $ipynb_file"
           pip install -r "$nb_dir/requirements.txt"
         else
           echo "No local requirements.txt for $ipynb_file"
         fi
-        
+
     - name: Validate Notebook
       run: |
         pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
 
     - name: Execute Notebook
       run: |
-        ipynb_file="${{ matrix.notebook }}"
-        nb_dir=$(dirname "$ipynb_file")
+        jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
 
-        # Now execute
-        jupyter nbconvert --to notebook --execute --inplace "$ipynb_file"
+    - name: Security Scan Notebook
+      if: inputs.security-scan == true
+      run: |
+        ipynb_file="${{ matrix.notebook }}"
+        py_file="${ipynb_file%.ipynb}.py"
+        echo "Converting $ipynb_file to script for Bandit scan"
+        jupyter nbconvert --to script "$ipynb_file"
+        bandit "$py_file"
+
+    - name: Upload Notebook if Failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: failed-${{ matrix.notebook }}
+        path: ${{ matrix.notebook }}
 
 
 
