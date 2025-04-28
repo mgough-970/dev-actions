@@ -50,43 +50,43 @@ jobs:
 
     - id: set
       run: |
-        echo "Gathering notebooks list based on mode..."
+        git fetch origin main
 
-        if [[ "${{ github.event_name }}" == "pull_request" && "${{ inputs.execution-mode }}" == "changed" ]]; then
-          echo "PR + changed mode detected."
+        if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          echo "PR detected: finding changed notebooks."
           NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb' | jq -R . | jq -s .)
-        elif [[ "${{ inputs.execution-mode }}" == "all" ]]; then
-          echo "Manual run: all notebooks mode."
-          NOTEBOOKS=$(find notebooks/ -name '*.ipynb' | jq -R . | jq -s .)
-        elif [[ "${{ inputs.execution-mode }}" == "single" ]]; then
-          echo "Manual run: single notebook mode."
-          NOTEBOOK_PATH=$(find notebooks/ -name "${{ inputs.single-filename }}" | head -n 1)
-          if [[ -z "$NOTEBOOK_PATH" ]]; then
-            echo "ERROR: Single notebook '${{ inputs.single-filename }}' not found."
+
+        else
+          echo "Manual or scheduled run."
+          if [[ "${{ inputs.execution-mode }}" == "all" ]]; then
+            NOTEBOOKS=$(find notebooks/ -name '*.ipynb' | jq -R . | jq -s .)
+
+          elif [[ "${{ inputs.execution-mode }}" == "single" ]]; then
+            echo "Looking for single notebook: ${{ inputs.single-filename }}"
+            NOTEBOOK_PATH=$(find notebooks/ -name "${{ inputs.single-filename }}" | head -n 1)
+            if [[ -z "$NOTEBOOK_PATH" ]]; then
+              echo "ERROR: Single notebook '${{ inputs.single-filename}' not found."
+              exit 1
+            fi
+            NOTEBOOKS=$(echo "$NOTEBOOK_PATH" | jq -R . | jq -s .)
+
+          else
+            echo "ERROR: Invalid manual execution mode."
             exit 1
           fi
-          NOTEBOOKS=$(echo "$NOTEBOOK_PATH" | jq -R . | jq -s .)
-        else
-          echo "ERROR: Invalid execution mode or unsupported event."
-          exit 1
         fi
 
         echo "Discovered notebooks:"
         echo "$NOTEBOOKS"
 
-        # Always output a JSON array, even if empty
         echo "notebooks_json<<EOF" >> $GITHUB_OUTPUT
         echo "$NOTEBOOKS" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
 
-        # Detect if requirements.txt or environment.yml changed (only important for PRs)
         DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
-        echo "dependencies_changed=$([[ -n \"$DEPS\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
-
-        # Detect if static content changed (for triggering site rebuild)
         STATIC=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
+        echo "dependencies_changed=$([[ -n \"$DEPS\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
         echo "static_changed=$([[ -n \"$STATIC\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
-
 
 
   validate-and-execute:
