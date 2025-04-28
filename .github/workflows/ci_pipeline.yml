@@ -107,15 +107,12 @@ jobs:
     - name: Security Scan Notebook
       if: inputs.security-scan == true
       run: |
-        jupyter nbconvert --to script "${{ matrix.notebook }}"
-        bandit "${{ matrix.notebook | replace('.ipynb', '.py') }}"
+        ipynb_file="${{ matrix.notebook }}"
+        py_file="${ipynb_file%.ipynb}.py"
+        echo "Converting $ipynb_file to script for Bandit scan"
+        jupyter nbconvert --to script "$ipynb_file"
+        bandit "$py_file"
 
-    - name: Upload Notebook if Failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: failed-${{ matrix.notebook }}
-        path: ${{ matrix.notebook }}
 
   post-merge-storage-update:
     needs: [detect-changes, validate-and-execute]
