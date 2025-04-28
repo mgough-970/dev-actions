@@ -52,55 +52,58 @@ jobs:
       run: |
         git fetch origin main
 
-        echo "Detecting changes..."
+        echo "Detecting changed files..."
 
         NOTEBOOKS_TO_RUN=()
 
-        echo "Checking if global dependency files changed..."
-        if git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | grep .; then
-          echo "Global dependency file change detected."
+        # Check if global requirements files changed
+        GLOBAL_DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh)
+        if [[ -n "$GLOBAL_DEPS" ]]; then
+          echo "Global requirements file change detected."
           NOTEBOOKS_TO_RUN+=($(find notebooks/ -name '*.ipynb'))
         fi
 
-        echo "Checking if subfolder requirements.txt files changed..."
-        for file in $(git diff --name-only origin/main HEAD -- 'notebooks/**/requirements.txt'); do
+        # Check if any subfolder requirements.txt files changed
+        SUBFOLDER_DEPS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/requirements.txt')
+        for file in $SUBFOLDER_DEPS; do
           if [[ -n "$file" ]]; then
             folder=$(dirname "$file")
-            echo "Folder-specific dependency file changed in $folder"
+            echo "Subfolder requirements.txt change detected in $folder"
             NOTEBOOKS_TO_RUN+=($(find "$folder" -name '*.ipynb'))
           fi
         done
 
-        if [[ "${{ github.event_name }}" == "pull_request" && "${{ inputs.execution-mode || 'changed' }}" == "changed" ]]; then
-          echo "Adding changed notebooks from PR diff."
-          CHANGED_NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb')
-          for nb in $CHANGED_NOTEBOOKS; do
+        # Check if any notebooks themselves changed
+        CHANGED_NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb')
+        for nb in $CHANGED_NOTEBOOKS; do
+          if [[ -n "$nb" ]]; then
             NOTEBOOKS_TO_RUN+=("$nb")
-          done
-        fi
+          fi
+        done
 
-        # De-duplicate
+        # De-duplicate list
         NOTEBOOKS_TO_RUN=($(printf "%s\n" "${NOTEBOOKS_TO_RUN[@]}" | sort -u))
 
+        # Output final list
         if [[ ${#NOTEBOOKS_TO_RUN[@]} -eq 0 ]]; then
-          echo "No notebooks detected for execution."
+          echo "No notebooks detected for validation."
           echo "notebooks_json=[]" >> $GITHUB_OUTPUT
         else
-          # Convert list to JSON array
           NOTEBOOKS_JSON=$(printf '%s\n' "${NOTEBOOKS_TO_RUN[@]}" | jq -R . | jq -s .)
-          echo "Detected notebooks:"
+          echo "Detected notebooks for validation:"
           echo "$NOTEBOOKS_JSON"
           echo "notebooks_json<<EOF" >> $GITHUB_OUTPUT
           echo "$NOTEBOOKS_JSON" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
         fi
 
-        # Dependency or static file changes (only useful info gathering)
-        DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
-        echo "dependencies_changed=$([[ -n \"$DEPS\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+        # Output dependency and static changes as flags
+        DEPS_CHANGED=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
+        echo "dependencies_changed=$([[ -n \"$DEPS_CHANGED\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
 
-        STATIC=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
-        echo "static_changed=$([[ -n \"$STATIC\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+        STATIC_CHANGED=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
+        echo "static_changed=$([[ -n \"$STATIC_CHANGED\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
 
 
   validate-and-execute:
