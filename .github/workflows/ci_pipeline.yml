@@ -65,7 +65,7 @@ jobs:
             echo "Looking for single notebook: ${{ inputs.single-filename }}"
             NOTEBOOK_PATH=$(find notebooks/ -name "${{ inputs.single-filename }}" | head -n 1)
             if [[ -z "$NOTEBOOK_PATH" ]]; then
-              echo "ERROR: Single notebook '${{ inputs.single-filename}' not found."
+              echo "ERROR: Single notebook '${{ inputs.single-filename}}' not found."
               exit 1
             fi
             NOTEBOOKS=$(echo "$NOTEBOOK_PATH" | jq -R . | jq -s .)
