@@ -153,27 +153,32 @@ jobs:
         
     - name: Set up Conda Environment
       if: inputs.use-conda == true
+      shell: bash -l {0}
       run: |
-        echo "Setting up Conda environment..."
+        echo "Setting up Conda environment using pre-installed Miniconda..."
     
-        # Install mamba to speed things up
-        conda install -n base -c conda-forge mamba -y
+        source ~/miniconda3/etc/profile.d/conda.sh
+        conda activate base
     
         ENV_NAME="ci_env"
-        mamba create -n $ENV_NAME python=${{ inputs.python-version }} -y
+        echo "Creating new Conda environment: $ENV_NAME with Python ${{ inputs.python-version }}"
+        conda create -n $ENV_NAME python=${{ inputs.python-version }} -y
     
         if [[ -n "${{ inputs.conda-environment-file }}" ]]; then
-          echo "Using conda environment file: ${{ inputs.conda-environment-file }}"
-          mamba env update -n $ENV_NAME -f "${{ inputs.conda-environment-file }}"
+          echo "Updating environment from file: ${{ inputs.conda-environment-file }}"
+          conda env update -n $ENV_NAME -f "${{ inputs.conda-environment-file }}"
         elif [[ -n "${{ inputs.conda-packages }}" ]]; then
           echo "Installing conda packages: ${{ inputs.conda-packages }}"
-          mamba install -n $ENV_NAME -c conda-forge $(echo ${{ inputs.conda-packages }} | tr ',' ' ') -y
+          conda install -n $ENV_NAME -c conda-forge $(echo "${{ inputs.conda-packages }}" | tr ',' ' ') -y
         else
-          echo "No additional conda packages provided."
+          echo "No additional conda packages specified."
         fi
     
-        echo "Activating conda environment $ENV_NAME"
-        source activate $ENV_NAME
+        echo "Activating environment $ENV_NAME"
+        conda activate $ENV_NAME
+    
+        echo "Environment $ENV_NAME ready."
+
 
 
 
