@@ -51,7 +51,8 @@ jobs:
     - id: changed
       run: |
         git fetch origin main
-        NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb' | tr '\n' ' ')
+        NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb' | jq -R . | jq -s .)
+        echo "changed_notebooks=$NOTEBOOKS" >> $GITHUB_OUTPUT
         DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
         STATIC=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
         echo "changed_notebooks=$NOTEBOOKS" >> $GITHUB_OUTPUT
