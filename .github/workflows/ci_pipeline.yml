@@ -150,6 +150,32 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ inputs.python-version }}
+        
+    - name: Set up Conda Environment
+      if: inputs.use-conda == true
+      run: |
+        echo "Setting up Conda environment..."
+    
+        # Install mamba to speed things up
+        conda install -n base -c conda-forge mamba -y
+    
+        ENV_NAME="ci_env"
+        mamba create -n $ENV_NAME python=${{ inputs.python-version }} -y
+    
+        if [[ -n "${{ inputs.conda-environment-file }}" ]]; then
+          echo "Using conda environment file: ${{ inputs.conda-environment-file }}"
+          mamba env update -n $ENV_NAME -f "${{ inputs.conda-environment-file }}"
+        elif [[ -n "${{ inputs.conda-packages }}" ]]; then
+          echo "Installing conda packages: ${{ inputs.conda-packages }}"
+          mamba install -n $ENV_NAME -c conda-forge $(echo ${{ inputs.conda-packages }} | tr ',' ' ') -y
+        else
+          echo "No additional conda packages provided."
+        fi
+    
+        echo "Activating conda environment $ENV_NAME"
+        source activate $ENV_NAME
+
+
 
     - name: Install Validation Dependencies
       run: |
