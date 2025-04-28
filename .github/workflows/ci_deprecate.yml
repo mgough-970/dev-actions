@@ -25,13 +25,17 @@ jobs:
         run: |
           NOTEBOOK="${{ inputs.notebook-path }}"
 
+          if [[ -z "$NOTEBOOK" ]]; then
+            echo "ERROR: Notebook path is empty. You must provide a valid notebook filename."
+            exit 1
+          fi
+
           echo "Starting deprecation for: $NOTEBOOK"
 
           if [[ ! -f "$NOTEBOOK" ]]; then
             echo "Notebook not found directly at: $NOTEBOOK"
             echo "Attempting to search inside notebooks/ folder..."
 
-            # Search inside notebooks/ recursively
             FOUND_NOTEBOOK=$(find notebooks/ -type f -name "$(basename "$NOTEBOOK")" | head -n 1)
 
             if [[ -z "$FOUND_NOTEBOOK" ]]; then
@@ -56,6 +60,9 @@ jobs:
 
           # Add deprecation metadata
           jq '.metadata.deprecated = {"status": true, "removal_date": "'"$REMOVAL_DATE"'"}' "$NOTEBOOK" > temp2.json && mv temp2.json "$NOTEBOOK"
+
+          # Export NOTEBOOK path to use in next step
+          echo "NOTEBOOK=$NOTEBOOK" >> $GITHUB_ENV
 
       - name: Commit and Push Deprecation Changes
         run: |
