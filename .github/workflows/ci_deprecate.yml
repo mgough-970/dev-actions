@@ -60,8 +60,10 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ inputs.notebook-path }}"
-          git commit -m "Manually deprecated notebook ${{ inputs.notebook-path }} (removal in 30 days)"
+          git checkout gh-storage || git checkout -b gh-storage
+          git add "$NOTEBOOK"
+          git commit -m "Manually deprecated notebook $NOTEBOOK (removal in 30 days)" || echo "No changes to commit."
           git push origin gh-storage
         env:
           GITHUB_TOKEN: ${{ secrets.github-token }}
+
