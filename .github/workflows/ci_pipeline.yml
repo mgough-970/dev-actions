@@ -52,36 +52,61 @@ jobs:
       run: |
         git fetch origin main
 
-        echo "Detecting changed files..."
+        echo "Detecting changes..."
 
         NOTEBOOKS_TO_RUN=()
 
-        # Check if global requirements files changed
-        GLOBAL_DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh)
-        if [[ -n "$GLOBAL_DEPS" ]]; then
-          echo "Global requirements file change detected."
-          NOTEBOOKS_TO_RUN+=($(find notebooks/ -name '*.ipynb'))
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          echo "Manual run detected."
+
+          if [[ "${{ inputs.execution-mode }}" == "all" ]]; then
+            echo "Finding all notebooks..."
+            NOTEBOOKS_TO_RUN=($(find notebooks/ -name '*.ipynb'))
+
+          elif [[ "${{ inputs.execution-mode }}" == "single" ]]; then
+            echo "Looking for single notebook: ${{ inputs.single-filename }}"
+            NOTEBOOK_PATH=$(find notebooks/ -name "${{ inputs.single-filename }}" | head -n 1)
+            if [[ -z "$NOTEBOOK_PATH" ]]; then
+              echo "ERROR: Single notebook '${{ inputs.single-filename }}' not found."
+              exit 1
+            fi
+            NOTEBOOKS_TO_RUN=("$NOTEBOOK_PATH")
+
+          else
+            echo "Invalid manual execution mode: ${{ inputs.execution-mode }}"
+            exit 1
+          fi
+
+        else
+          echo "PR or Push event detected."
+
+          # 1. Check if global requirements files changed
+          GLOBAL_DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh)
+          if [[ -n "$GLOBAL_DEPS" ]]; then
+            echo "Global dependency file change detected."
+            NOTEBOOKS_TO_RUN+=($(find notebooks/ -name '*.ipynb'))
+          fi
+
+          # 2. Check if subfolder requirements.txt files changed
+          SUBFOLDER_DEPS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/requirements.txt')
+          for file in $SUBFOLDER_DEPS; do
+            if [[ -n "$file" ]]; then
+              folder=$(dirname "$file")
+              echo "Subfolder requirements.txt change detected in $folder"
+              NOTEBOOKS_TO_RUN+=($(find "$folder" -name '*.ipynb'))
+            fi
+          done
+
+          # 3. Check if notebooks themselves changed
+          CHANGED_NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb')
+          for nb in $CHANGED_NOTEBOOKS; do
+            if [[ -n "$nb" ]]; then
+              NOTEBOOKS_TO_RUN+=("$nb")
+            fi
+          done
         fi
 
-        # Check if any subfolder requirements.txt files changed
-        SUBFOLDER_DEPS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/requirements.txt')
-        for file in $SUBFOLDER_DEPS; do
-          if [[ -n "$file" ]]; then
-            folder=$(dirname "$file")
-            echo "Subfolder requirements.txt change detected in $folder"
-            NOTEBOOKS_TO_RUN+=($(find "$folder" -name '*.ipynb'))
-          fi
-        done
-
-        # Check if any notebooks themselves changed
-        CHANGED_NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb')
-        for nb in $CHANGED_NOTEBOOKS; do
-          if [[ -n "$nb" ]]; then
-            NOTEBOOKS_TO_RUN+=("$nb")
-          fi
-        done
-
-        # De-duplicate list
+        # De-duplicate
         NOTEBOOKS_TO_RUN=($(printf "%s\n" "${NOTEBOOKS_TO_RUN[@]}" | sort -u))
 
         # Output final list
@@ -97,12 +122,13 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
         fi
 
-        # Output dependency and static changes as flags
+        # Output dependency and static flags
         DEPS_CHANGED=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
         echo "dependencies_changed=$([[ -n \"$DEPS_CHANGED\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
 
         STATIC_CHANGED=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
         echo "static_changed=$([[ -n \"$STATIC_CHANGED\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
 
 
 
