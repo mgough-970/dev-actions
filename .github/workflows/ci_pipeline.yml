@@ -199,12 +199,26 @@ jobs:
         fi
 
     - name: Validate Notebook
+      shell: bash -l {0}
       run: |
+        {% raw %} {% endraw %}
+        {% if inputs.use-conda == 'true' %}
+        source ~/miniconda3/etc/profile.d/conda.sh
+        conda activate ci_env
+        {% endif %}
         pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
 
+
     - name: Execute Notebook
+      shell: bash -l {0}
       run: |
+        {% raw %} {% endraw %}
+        {% if inputs.use-conda == 'true' %}
+        source ~/miniconda3/etc/profile.d/conda.sh
+        conda activate ci_env
+        {% endif %}
         jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
+
 
     - name: Security Scan Notebook
       if: inputs.security-scan == true
