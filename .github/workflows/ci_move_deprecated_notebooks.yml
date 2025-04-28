@@ -1,0 +1,49 @@
+name: Move Deprecated Notebooks
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version to use"
+        type: string
+        required: true
+
+jobs:
+  move-deprecated-notebooks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Move Deprecated Notebooks
+        run: |
+          echo "Scanning for deprecated notebooks..."
+          
+          # Create target archive folder if it doesn't exist
+          mkdir -p notebooks/deprecated
+
+          # Move any notebooks containing 'deprecated: true' in their metadata
+          for notebook in $(find notebooks/ -name '*.ipynb'); do
+            if grep -q '"deprecated": true' "$notebook"; then
+              echo "Deprecating notebook: $notebook"
+              mv "$notebook" notebooks/deprecated/
+            fi
+          done
+
+          echo "Completed moving deprecated notebooks."
+
+      - name: Commit and Push Changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add notebooks/deprecated/
+          git commit -m "Moved deprecated notebooks to archive folder" || echo "No changes to commit."
+          git push
