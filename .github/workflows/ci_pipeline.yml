@@ -37,12 +37,36 @@ on:
         required: false
 
 jobs:
-  validate-and-execute:
+  detect-changes:
     runs-on: ubuntu-latest
+    outputs:
+      changed_notebooks: ${{ steps.changed.outputs.changed_notebooks }}
+      dependencies_changed: ${{ steps.changed.outputs.dependencies_changed }}
+      static_changed: ${{ steps.changed.outputs.static_changed }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - id: changed
+      run: |
+        git fetch origin main
+        NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb' | tr '\n' ' ')
+        DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
+        STATIC=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
+        echo "changed_notebooks=$NOTEBOOKS" >> $GITHUB_OUTPUT
+        echo "dependencies_changed=$([[ -n \"$DEPS\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+        echo "static_changed=$([[ -n \"$STATIC\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+  validate-and-execute:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    if: ${{ needs.detect-changes.outputs.changed_notebooks != '' || needs.detect-changes.outputs.dependencies_changed == 'true' }}
     strategy:
-      fail-fast: false
       matrix:
-        notebook: []
+        notebook: ${{ fromJson(needs.detect-changes.outputs.changed_notebooks || '[]') }}
+      fail-fast: false
+      max-parallel: 4
     steps:
     - uses: actions/checkout@v4
       with:
@@ -68,42 +92,81 @@ jobs:
           fi
         fi
 
-    - name: Install Validation Dependencies
+    - name: Install Dependencies
       run: |
         pip install jupyter nbval nbconvert bandit
 
     - name: Validate Notebook
       run: |
-        if [[ "${{ inputs.single-filename }}" != "" ]]; then
-          pytest --nbval --nbval-cell-timeout=4000 "${{ inputs.single-filename }}"
-        else
-          find notebooks/ -name '*.ipynb' | while read nb; do
-            pytest --nbval --nbval-cell-timeout=4000 "$nb"
-          done
-        fi
+        pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
 
     - name: Execute Notebook
       run: |
-        if [[ "${{ inputs.single-filename }}" != "" ]]; then
-          jupyter nbconvert --to notebook --execute --inplace "${{ inputs.single-filename }}"
-        else
-          find notebooks/ -name '*.ipynb' | while read nb; do
-            jupyter nbconvert --to notebook --execute --inplace "$nb"
-          done
-        fi
+        jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
 
-    - name: Security Scan
+    - name: Security Scan Notebook
       if: inputs.security-scan == true
       run: |
-        find notebooks/ -name '*.ipynb' | while read nb; do
-          jupyter nbconvert --to script "$nb"
-        done
-        bandit -r notebooks/
+        jupyter nbconvert --to script "${{ matrix.notebook }}"
+        bandit "${{ matrix.notebook | replace('.ipynb', '.py') }}"
 
-    - name: Upload Notebook Artifacts if Failure
+    - name: Upload Notebook if Failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: failed-notebooks
-        path: notebooks/
+        name: failed-${{ matrix.notebook }}
+        path: ${{ matrix.notebook }}
 
+  post-merge-storage-update:
+    needs: [detect-changes, validate-and-execute]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: gh-storage
+        fetch-depth: 0
+
+    - name: Checkout Main to temp dir
+      run: |
+        mkdir main-checkout
+        cd main-checkout
+        git init
+        git remote add origin https://github.com/${{ github.repository }}
+        git fetch origin main
+        git checkout FETCH_HEAD
+
+    - name: Find changed notebooks from main
+      id: find-changes
+      run: |
+        cd main-checkout
+        NOTEBOOKS=$(git diff --name-only origin/gh-storage FETCH_HEAD -- 'notebooks/**/*.ipynb' | tr '\n' ' ')
+        echo "changed=$NOTEBOOKS" >> $GITHUB_OUTPUT
+
+    - name: Re-execute and update gh-storage
+      if: steps.find-changes.outputs.changed != ''
+      run: |
+        cd main-checkout
+        for file in ${{ steps.find-changes.outputs.changed }}; do
+          echo "Executing $file"
+          jupyter nbconvert --to notebook --execute --inplace "$file"
+          cp "$file" ../
+        done
+
+    - name: Commit updated notebooks
+      if: steps.find-changes.outputs.changed != ''
+      run: |
+        git config --global user.name "CI Bot"
+        git config --global user.email "ci-bot@example.com"
+        git add ${{ steps.find-changes.outputs.changed }}
+        git commit -m "Post-merge executed notebook updates"
+        git push origin gh-storage
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-html-site:
+    needs: [post-merge-storage-update]
+    if: inputs.build-html == true
+    uses: mgough-970/dev-actions/.github/workflows/ci_html_builder.yml@v1
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
