@@ -155,29 +155,25 @@ jobs:
       if: inputs.use-conda == true
       shell: bash -l {0}
       run: |
-        echo "Setting up Conda environment using pre-installed Miniconda..."
+        echo "Setting up Conda environment..."
     
-        source ~/miniconda3/etc/profile.d/conda.sh
-        conda activate base
+        echo "Conda version:"
+        conda --version
     
         ENV_NAME="ci_env"
-        echo "Creating new Conda environment: $ENV_NAME with Python ${{ inputs.python-version }}"
+        echo "Creating Conda environment $ENV_NAME with Python ${{ inputs.python-version }}"
         conda create -n $ENV_NAME python=${{ inputs.python-version }} -y
     
         if [[ -n "${{ inputs.conda-environment-file }}" ]]; then
-          echo "Updating environment from file: ${{ inputs.conda-environment-file }}"
+          echo "Installing from environment file: ${{ inputs.conda-environment-file }}"
           conda env update -n $ENV_NAME -f "${{ inputs.conda-environment-file }}"
         elif [[ -n "${{ inputs.conda-packages }}" ]]; then
           echo "Installing conda packages: ${{ inputs.conda-packages }}"
           conda install -n $ENV_NAME -c conda-forge $(echo "${{ inputs.conda-packages }}" | tr ',' ' ') -y
         else
-          echo "No additional conda packages specified."
+          echo "No extra packages specified."
         fi
-    
-        echo "Activating environment $ENV_NAME"
-        conda activate $ENV_NAME
-    
-        echo "Environment $ENV_NAME ready."
+
 
 
 
@@ -202,24 +198,24 @@ jobs:
       if: inputs.use-conda == true
       shell: bash -l {0}
       run: |
-        source ~/miniconda3/etc/profile.d/conda.sh
+        echo "Activating ci_env"
         conda activate ci_env
         pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
+
 
     - name: Validate Notebook (No Conda)
       if: inputs.use-conda != true
       run: |
         pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
 
-
-
     - name: Execute Notebook (Conda)
       if: inputs.use-conda == true
       shell: bash -l {0}
       run: |
-        source ~/miniconda3/etc/profile.d/conda.sh
+        echo "Activating ci_env"
         conda activate ci_env
         jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
+
     
     - name: Execute Notebook (No Conda)
       if: inputs.use-conda != true
