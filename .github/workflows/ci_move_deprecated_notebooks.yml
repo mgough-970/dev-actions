@@ -34,7 +34,7 @@ jobs:
           CURRENT_DATE=$(date -u +"%Y-%m-%d")
           echo "Current UTC Date: $CURRENT_DATE"
 
-          # Clear previous file if exists
+          # Clean any old list
           rm -f expired_notebooks.txt
 
           for nb in $(find notebooks/ -name '*.ipynb'); do
@@ -47,12 +47,35 @@ jobs:
           done
 
           if [[ -f expired_notebooks.txt ]]; then
+            echo "Found expired notebooks:"
             cat expired_notebooks.txt
           else
             echo "No expired notebooks found."
           fi
 
-      - name: Remove from main branch
+      - name: Archive Expired Notebooks to Deprecated Branch
+        if: success()
+        run: |
+          if [[ -f expired_notebooks.txt ]]; then
+            echo "Checking out or creating deprecated branch..."
+            if git show-ref --quiet refs/heads/deprecated; then
+              git checkout deprecated
+              git pull origin deprecated
+            else
+              git checkout -b deprecated
+            fi
+
+            # Restore notebooks from origin/gh-storage
+            git checkout origin/gh-storage -- $(cat expired_notebooks.txt)
+
+            git add $(cat expired_notebooks.txt)
+            git commit -m "Archived expired notebooks to deprecated branch" || echo "No changes to commit."
+            git push origin deprecated
+          else
+            echo "No expired notebooks to archive."
+          fi
+
+      - name: Remove from Main Branch
         if: success()
         run: |
           if [[ -f expired_notebooks.txt ]]; then
@@ -67,7 +90,6 @@ jobs:
               echo "Removing $nb from main..."
               git rm -f "$nb" || echo "File $nb not found in main."
 
-              # Remove from ./_toc.yml (remove line matching notebook path minus .ipynb)
               TOC_ENTRY="${nb%.ipynb}"
               echo "Removing $TOC_ENTRY from ./_toc.yml..."
               grep -v "^- file: $TOC_ENTRY$" ./_toc.yml > temp.yml && mv temp.yml ./_toc.yml
@@ -93,7 +115,7 @@ jobs:
             echo "No expired notebooks to remove from main."
           fi
 
-      - name: Remove from gh-storage branch
+      - name: Remove from gh-storage Branch
         if: success()
         run: |
           if [[ -f expired_notebooks.txt ]]; then
@@ -112,7 +134,7 @@ jobs:
             echo "No expired notebooks to remove from gh-storage."
           fi
 
-      - name: Remove from gh-pages branch (HTML site)
+      - name: Remove from gh-pages Branch (HTML)
         if: success()
         run: |
           if [[ -f expired_notebooks.txt ]]; then
@@ -130,26 +152,4 @@ jobs:
             git push origin gh-pages
           else
             echo "No expired notebooks to remove from gh-pages."
-          fi
-
-      - name: Archive to deprecated branch
-        if: success()
-        run: |
-          if [[ -f expired_notebooks.txt ]]; then
-            echo "Checking out deprecated branch..."
-            if git show-ref --quiet refs/heads/deprecated; then
-              git checkout deprecated
-              git pull origin deprecated
-            else
-              git checkout -b deprecated
-            fi
-
-            # Restore from previous gh-storage copy
-            git checkout origin/gh-storage -- $(cat expired_notebooks.txt)
-
-            git add $(cat expired_notebooks.txt)
-            git commit -m "Archived expired notebooks to deprecated branch" || echo "No changes to commit."
-            git push origin deprecated
-          else
-            echo "No expired notebooks to archive to deprecated branch."
           fi
