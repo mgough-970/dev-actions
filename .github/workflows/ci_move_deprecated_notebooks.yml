@@ -60,10 +60,10 @@ jobs:
             echo "Checking out or creating deprecated branch..."
             if git show-ref --quiet refs/heads/deprecated; then
               git checkout deprecated
-              git pull origin deprecated || true
+              git pull --no-rebase origin deprecated || true
             else
               git checkout -b deprecated
-              git pull origin deprecated || true
+              git pull --no-rebase origin deprecated || true
             fi
 
             # Restore notebooks from gh-storage
