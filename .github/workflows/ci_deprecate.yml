@@ -7,10 +7,6 @@ on:
         description: "Path to the notebook to deprecate (e.g., notebooks/MIRI/JWPipeNB-MIRI-MRS.ipynb)"
         required: true
         type: string
-      removal-date:
-        description: "Scheduled removal date (e.g., 2024-12-31)"
-        required: true
-        type: string
     secrets:
       github-token:
         required: true
@@ -27,14 +23,18 @@ jobs:
       - name: Add Deprecation Banner and Metadata
         run: |
           NOTEBOOK="${{ inputs.notebook-path }}"
-          REMOVAL_DATE="${{ inputs.removal-date }}"
 
-          echo "Deprecating notebook: $NOTEBOOK with removal date: $REMOVAL_DATE"
+          echo "Deprecating notebook: $NOTEBOOK"
 
           if [[ ! -f "$NOTEBOOK" ]]; then
             echo "ERROR: Notebook not found at $NOTEBOOK"
             exit 1
           fi
+
+          # Calculate removal date 30 days from today
+          REMOVAL_DATE=$(date -u -d "+30 days" +"%Y-%m-%d")
+
+          echo "Setting removal date to: $REMOVAL_DATE"
 
           # Insert a Markdown warning cell at the top
           jq --arg date "$REMOVAL_DATE" \
@@ -50,7 +50,8 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git checkout gh-storage || git checkout -b gh-storage
           git add "${{ inputs.notebook-path }}"
-          git commit -m "Manually deprecated notebook ${{ inputs.notebook-path }}"
+          git commit -m "Manually deprecated notebook ${{ inputs.notebook-path }} (removal in 30 days)"
           git push origin gh-storage
         env:
           GITHUB_TOKEN: ${{ secrets.github-token }}
+
