@@ -1,67 +1,205 @@
-name: CI Unified Interaface
+name: Full Notebook CI Pipeline
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      execution-mode:
-        description: "Mode of execution: all notebooks, changed only, or a single notebook"
-        type: choice
-        options: [all, changed, single]
-        default: all
-
-      single-filename:
-        description: "Notebook filename for single mode (example: JWPipeNB-MIRI-MRS.ipynb)"
+      python-version:
+        required: true
         type: string
+      execution-mode:
+        required: true
+        type: string
+      single-filename:
         required: false
-
+        type: string
       build-html:
-        description: "Whether to trigger HTML book rebuild after execution"
+        required: false
         type: boolean
         default: true
-
       security-scan:
-        description: "Run Bandit security scan on notebook scripts"
+        required: false
         type: boolean
         default: true
-
       use-conda:
-        description: "Use conda environment (instead of just pip)"
+        required: false
         type: boolean
         default: false
-
       conda-environment-file:
-        description: "Path to environment.yml file (if any)"
-        type: string
         required: false
-
+        type: string
       conda-packages:
-        description: "Comma-separated packages to install from conda-forge (if needed)"
-        type: string
         required: false
-
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'notebooks/**/*.ipynb'
-      - 'static/**'
-      - '*.md'
-
-  schedule:
-    - cron: '0 5 * * *'
+        type: string
+    secrets:
+      CASJOBS_USERID:
+        required: false
+      CASJOBS_PW:
+        required: false
 
 jobs:
-  run-ci:
-    uses: mgough-970/dev-actions/.github/workflows/ci_pipeline.yml@v1
-    with:
-      python-version: 3.11
-      execution-mode: ${{ inputs.execution-mode }}
-      single-filename: ${{ inputs.single-filename }}
-      build-html: ${{ inputs.build-html }}
-      security-scan: ${{ inputs.security-scan }}
-      use-conda: ${{ inputs.use-conda }}
-      conda-environment-file: ${{ inputs.conda-environment-file }}
-      conda-packages: ${{ inputs.conda-packages }}
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      notebooks_json: ${{ steps.set.outputs.notebooks_json }}
+      dependencies_changed: ${{ steps.set.outputs.dependencies_changed }}
+      static_changed: ${{ steps.set.outputs.static_changed }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - id: set
+      run: |
+        echo "Gathering notebooks list based on mode..."
+
+        if [[ "${{ github.event_name }}" == "pull_request" && "${{ inputs.execution-mode }}" == "changed" ]]; then
+          echo "PR + changed mode detected."
+          NOTEBOOKS=$(git diff --name-only origin/main HEAD -- 'notebooks/**/*.ipynb' | jq -R . | jq -s .)
+        elif [[ "${{ inputs.execution-mode }}" == "all" ]]; then
+          echo "Manual run: all notebooks mode."
+          NOTEBOOKS=$(find notebooks/ -name '*.ipynb' | jq -R . | jq -s .)
+        elif [[ "${{ inputs.execution-mode }}" == "single" ]]; then
+          echo "Manual run: single notebook mode."
+          NOTEBOOK_PATH=$(find notebooks/ -name "${{ inputs.single-filename }}" | head -n 1)
+          if [[ -z "$NOTEBOOK_PATH" ]]; then
+            echo "ERROR: Single notebook '${{ inputs.single-filename }}' not found."
+            exit 1
+          fi
+          NOTEBOOKS=$(echo "$NOTEBOOK_PATH" | jq -R . | jq -s .)
+        else
+          echo "ERROR: Invalid execution mode or unsupported event."
+          exit 1
+        fi
+
+        echo "Discovered notebooks:"
+        echo "$NOTEBOOKS"
+
+        # Always output a JSON array, even if empty
+        echo "notebooks_json<<EOF" >> $GITHUB_OUTPUT
+        echo "$NOTEBOOKS" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+        # Detect if requirements.txt or environment.yml changed (only important for PRs)
+        DEPS=$(git diff --name-only origin/main HEAD -- requirements.txt environment.yml pre-requirements.sh | tr '\n' ' ')
+        echo "dependencies_changed=$([[ -n \"$DEPS\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+        # Detect if static content changed (for triggering site rebuild)
+        STATIC=$(git diff --name-only origin/main HEAD -- '*.md' static/** assets/** | tr '\n' ' ')
+        echo "static_changed=$([[ -n \"$STATIC\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+
+
+  validate-and-execute:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    if: ${{ needs.detect-changes.outputs.notebooks_json != '[]' }}
+    strategy:
+      matrix:
+        notebook: ${{ fromJson(needs.detect-changes.outputs.notebooks_json) }}
+      fail-fast: false
+      max-parallel: 4
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Validation Dependencies
+      run: |
+        pip install jupyter nbval nbconvert bandit
+
+    - name: Install Local Requirements
+      run: |
+        ipynb_file="${{ matrix.notebook }}"
+        nb_dir=$(dirname "$ipynb_file")
+
+        if [ -f "$nb_dir/requirements.txt" ]; then
+          echo "Installing local requirements for $ipynb_file"
+          pip install -r "$nb_dir/requirements.txt"
+        else
+          echo "No local requirements.txt for $ipynb_file"
+        fi
+
+    - name: Validate Notebook
+      run: |
+        pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
+
+    - name: Execute Notebook
+      run: |
+        jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
+
+    - name: Security Scan Notebook
+      if: inputs.security-scan == true
+      run: |
+        ipynb_file="${{ matrix.notebook }}"
+        py_file="${ipynb_file%.ipynb}.py"
+        echo "Converting $ipynb_file to script for Bandit scan"
+        jupyter nbconvert --to script "$ipynb_file"
+        bandit "$py_file"
+
+    - name: Upload Notebook if Failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: failed-${{ matrix.notebook }}
+        path: ${{ matrix.notebook }}
+
+
+
+  post-merge-storage-update:
+    needs: [detect-changes, validate-and-execute]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: gh-storage
+        fetch-depth: 0
+
+    - name: Checkout Main to temp dir
+      run: |
+        mkdir main-checkout
+        cd main-checkout
+        git init
+        git remote add origin https://github.com/${{ github.repository }}
+        git fetch origin main
+        git checkout FETCH_HEAD
+
+    - name: Find changed notebooks from main
+      id: find-changes
+      run: |
+        cd main-checkout
+        NOTEBOOKS=$(git diff --name-only origin/gh-storage FETCH_HEAD -- 'notebooks/**/*.ipynb' | tr '\n' ' ')
+        echo "changed=$NOTEBOOKS" >> $GITHUB_OUTPUT
+
+    - name: Re-execute and update gh-storage
+      if: steps.find-changes.outputs.changed != ''
+      run: |
+        cd main-checkout
+        for file in ${{ steps.find-changes.outputs.changed }}; do
+          echo "Executing $file"
+          jupyter nbconvert --to notebook --execute --inplace "$file"
+          cp "$file" ../
+        done
+
+    - name: Commit updated notebooks
+      if: steps.find-changes.outputs.changed != ''
+      run: |
+        git config --global user.name "CI Bot"
+        git config --global user.email "ci-bot@example.com"
+        git add ${{ steps.find-changes.outputs.changed }}
+        git commit -m "Post-merge executed notebook updates"
+        git push origin gh-storage
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-html-site:
+    needs: [post-merge-storage-update]
+    if: inputs.build-html == true
+    uses: mgough-970/dev-actions/.github/workflows/ci_html_builder.yml@v1
     secrets:
-      CASJOBS_USERID: ${{ secrets.CASJOBS_USERID }}
-      CASJOBS_PW: ${{ secrets.CASJOBS_PW }}
+      github-token: ${{ secrets.GITHUB_TOKEN }}
