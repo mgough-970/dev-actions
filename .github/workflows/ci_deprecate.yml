@@ -15,9 +15,10 @@ jobs:
   deprecate-notebook:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout gh-storage branch
         uses: actions/checkout@v4
         with:
+          ref: gh-storage
           fetch-depth: 0
 
       - name: Add Deprecation Banner and Metadata
@@ -48,10 +49,8 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout gh-storage || git checkout -b gh-storage
           git add "${{ inputs.notebook-path }}"
           git commit -m "Manually deprecated notebook ${{ inputs.notebook-path }} (removal in 30 days)"
           git push origin gh-storage
         env:
           GITHUB_TOKEN: ${{ secrets.github-token }}
-
