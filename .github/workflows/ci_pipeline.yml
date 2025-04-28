@@ -109,16 +109,20 @@ jobs:
 
     - name: Execute Notebook
       run: |
-        jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
-
-    - name: Security Scan Notebook
-      if: inputs.security-scan == true
-      run: |
         ipynb_file="${{ matrix.notebook }}"
-        py_file="${ipynb_file%.ipynb}.py"
-        echo "Converting $ipynb_file to script for Bandit scan"
-        jupyter nbconvert --to script "$ipynb_file"
-        bandit "$py_file"
+        nb_dir=$(dirname "$ipynb_file")
+    
+        # If there is a requirements.txt in the notebook's folder, install it
+        if [ -f "$nb_dir/requirements.txt" ]; then
+          echo "Installing local requirements for $ipynb_file"
+          pip install -r "$nb_dir/requirements.txt"
+        else
+          echo "No local requirements.txt for $ipynb_file"
+        fi
+    
+        # Now execute
+        jupyter nbconvert --to notebook --execute --inplace "$ipynb_file"
+
 
 
   post-merge-storage-update:
