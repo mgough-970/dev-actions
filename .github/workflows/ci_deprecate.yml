@@ -24,35 +24,36 @@ jobs:
       - name: Add Deprecation Banner and Metadata
         run: |
           NOTEBOOK="${{ inputs.notebook-path }}"
-      
-          echo "Deprecating notebook: $NOTEBOOK"
-      
+
+          echo "Starting deprecation for: $NOTEBOOK"
+
           if [[ ! -f "$NOTEBOOK" ]]; then
-            echo "Notebook not found at direct path: $NOTEBOOK"
+            echo "Notebook not found directly at: $NOTEBOOK"
             echo "Attempting to search inside notebooks/ folder..."
-      
-            # Try to locate it under notebooks/ directory
+
+            # Search inside notebooks/ recursively
             FOUND_NOTEBOOK=$(find notebooks/ -type f -name "$(basename "$NOTEBOOK")" | head -n 1)
-      
+
             if [[ -z "$FOUND_NOTEBOOK" ]]; then
               echo "ERROR: Notebook $NOTEBOOK not found anywhere under notebooks/"
               exit 1
             fi
-      
+
             echo "Found notebook at $FOUND_NOTEBOOK"
             NOTEBOOK="$FOUND_NOTEBOOK"
           fi
-      
+
+          echo "Working on file: $NOTEBOOK"
+
           # Calculate removal date 30 days from today
           REMOVAL_DATE=$(date -u -d "+30 days" +"%Y-%m-%d")
-      
           echo "Setting removal date to: $REMOVAL_DATE"
-      
+
           # Insert a Markdown warning cell at the top
           jq --arg date "$REMOVAL_DATE" \
             '.cells |= [{"cell_type":"markdown","metadata":{},"source":["⚠️ **DEPRECATED**: This notebook is scheduled for removal on \($date).\n"]}] + .' \
             "$NOTEBOOK" > temp1.json && mv temp1.json "$NOTEBOOK"
-      
+
           # Add deprecation metadata
           jq '.metadata.deprecated = {"status": true, "removal_date": "'"$REMOVAL_DATE"'"}' "$NOTEBOOK" > temp2.json && mv temp2.json "$NOTEBOOK"
 
@@ -60,10 +61,9 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout gh-storage || git checkout -b gh-storage
+
           git add "$NOTEBOOK"
           git commit -m "Manually deprecated notebook $NOTEBOOK (removal in 30 days)" || echo "No changes to commit."
           git push origin gh-storage
         env:
           GITHUB_TOKEN: ${{ secrets.github-token }}
-
