@@ -198,8 +198,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-html-site:
-    needs: [validate-and-execute]
+    needs: [post-merge-storage-update]
     if: inputs.build-html == true
     uses: mgough-970/dev-actions/.github/workflows/ci_html_builder.yml@v1
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+
