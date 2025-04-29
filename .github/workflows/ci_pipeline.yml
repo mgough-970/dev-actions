@@ -194,55 +194,95 @@ jobs:
           echo "No local requirements.txt for $ipynb_file"
         fi
 
-    - name: Validate Notebooks
+    - name: Validate Notebook
       run: |
+        set -e  # Exit immediately on any error
+    
+        NOTEBOOK="${{ matrix.notebook }}"
+        REQFILE="$(dirname "$NOTEBOOK")/requirements.txt"
+    
         if [ "${{ inputs.use-conda }}" == "true" ]; then
-          echo "Setting up Conda environment"
-          source ~/miniconda3/etc/profile.d/conda.sh
+          echo "🔧 Setting up Conda environment..."
+    
+          # Locate conda.sh dynamically (GitHub runners use different paths)
+          CONDA_SH=$(find / -name conda.sh 2>/dev/null | head -n 1)
+          if [ -z "$CONDA_SH" ]; then
+            echo "❌ conda.sh not found — cannot activate Conda"
+            exit 1
+          fi
+    
+          source "$CONDA_SH"
           conda activate ci_env
     
-          echo "Installing requirements.txt inside conda environment"
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
+          if [ -f "$REQFILE" ]; then
+            echo "📦 Installing notebook-specific requirements from $REQFILE"
+            pip install -r "$REQFILE"
+          else
+            echo "⚠️ No local requirements.txt found for $NOTEBOOK — skipping install"
           fi
         else
-          echo "Installing requirements.txt in system Python"
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
+          echo "🐍 Using system Python..."
+    
+          if [ -f "$REQFILE" ]; then
+            echo "📦 Installing notebook-specific requirements from $REQFILE"
+            pip install -r "$REQFILE"
+          else
+            echo "⚠️ No local requirements.txt found for $NOTEBOOK — skipping install"
           fi
         fi
     
-        echo "Running validation"
-        pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
+        echo "✅ Validating notebook: $NOTEBOOK"
+        pytest --nbval --nbval-cell-timeout=4000 "$NOTEBOOK"
       shell: /usr/bin/bash -l {0}
+
 
 
     - name: Validate Notebook (No Conda)
       if: inputs.use-conda != true
       run: |
         pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
-
-    - name: Execute Notebooks
+        
+    - name: Execute Notebook
       run: |
+        set -e  # Stop on first failure
+    
+        NOTEBOOK="${{ matrix.notebook }}"
+        REQFILE="$(dirname "$NOTEBOOK")/requirements.txt"
+    
         if [ "${{ inputs.use-conda }}" == "true" ]; then
-          echo "Setting up Conda environment"
-          source ~/miniconda3/etc/profile.d/conda.sh
+          echo "🔧 Setting up Conda environment..."
+    
+          # Locate Conda bootstrap
+          CONDA_SH=$(find / -name conda.sh 2>/dev/null | head -n 1)
+          if [ -z "$CONDA_SH" ]; then
+            echo "❌ conda.sh not found — cannot activate Conda"
+            exit 1
+          fi
+    
+          source "$CONDA_SH"
           conda activate ci_env
     
-          echo "Installing requirements.txt inside conda environment"
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
+          if [ -f "$REQFILE" ]; then
+            echo "📦 Installing notebook-specific requirements from $REQFILE"
+            pip install -r "$REQFILE"
+          else
+            echo "⚠️ No local requirements.txt found for $NOTEBOOK — skipping install"
           fi
         else
-          echo "Installing requirements.txt in system Python"
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
+          echo "🐍 Using system Python..."
+    
+          if [ -f "$REQFILE" ]; then
+            echo "📦 Installing notebook-specific requirements from $REQFILE"
+            pip install -r "$REQFILE"
+          else
+            echo "⚠️ No local requirements.txt found for $NOTEBOOK — skipping install"
           fi
         fi
     
-        echo "Executing notebook: ${{ matrix.notebook }}"
-        jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
+        echo "🚀 Executing notebook: $NOTEBOOK"
+        jupyter nbconvert --to notebook --execute --inplace "$NOTEBOOK"
       shell: /usr/bin/bash -l {0}
+
 
     - name: Execute Notebook (system Python)
       run: |
