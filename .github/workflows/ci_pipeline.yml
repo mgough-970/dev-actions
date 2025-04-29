@@ -178,6 +178,9 @@ jobs:
   
           echo "🧠 Registering Jupyter kernel for ci_env"
           python -m ipykernel install --user --name=ci_env --display-name "Python (ci_env)"
+
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev
   
       - name: Install Local Requirements (optional pip-only)
         shell: bash -l {0}
