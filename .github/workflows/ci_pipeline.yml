@@ -206,8 +206,7 @@ jobs:
         run: |
           set -e
           NOTEBOOK="${{ matrix.notebook }}"
-          REQFILE="$(dirname "$NOTEBOOK")/requirements.txt"
-
+          
           if [ "${{ inputs.use-conda }}" == "true" ]; then
             echo "🔁 Reactivating Conda for validation..."
             source /usr/share/miniconda/etc/profile.d/conda.sh
@@ -217,7 +216,6 @@ jobs:
             echo "🐍 Using system Python"
           fi
 
-          pip install -r "$REQFILE"
           echo "✅ Clearing outputs and validating: $NOTEBOOK"
           jupyter nbconvert --clear-output --inplace "$NOTEBOOK"
           pytest --nbval --nbval-cell-timeout=4000 "$NOTEBOOK"
@@ -227,7 +225,6 @@ jobs:
         run: |
           set -e
           NOTEBOOK="${{ matrix.notebook }}"
-          REQFILE="$(dirname "$NOTEBOOK")/requirements.txt"
 
           if [ "${{ inputs.use-conda }}" == "true" ]; then
             echo "🔁 Reactivating Conda for execution..."
@@ -238,7 +235,6 @@ jobs:
             echo "🐍 Using system Python"
           fi
   
-          pip install -r "$REQFILE"
           echo "🚀 Executing notebook: $NOTEBOOK"
           if ! jupyter nbconvert --to notebook --execute --inplace "$NOTEBOOK"; then
             echo "⚠️ Execution failed — inserting failure marker"
