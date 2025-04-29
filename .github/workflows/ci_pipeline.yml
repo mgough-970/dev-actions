@@ -150,11 +150,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
-          
-      - name: Add conda to system path
-        run: |
-          echo $CONDA/bin >> $GITHUB_PATH  
-          
+  
       - name: Set up Conda Environment
         if: inputs.use-conda == true
         shell: bash -l {0}
@@ -162,44 +158,39 @@ jobs:
           echo "🔧 Creating Conda environment with conda-forge packages..."
           source /usr/share/miniconda/etc/profile.d/conda.sh
           conda create --yes --solver=classic -n ci_env -c conda-forge python=${{ inputs.python-version }}
-          
+  
           if [[ -n "${{ inputs.conda-environment-file }}" ]]; then
-            echo "📦 Installing environment file: ${{ inputs.conda-environment-file }}"
+            echo "📦 Installing from Conda environment file: ${{ inputs.conda-environment-file }}"
             conda env update -n ci_env -f "${{ inputs.conda-environment-file }}"
           elif [[ -n "${{ inputs.conda-packages }}" ]]; then
             echo "📦 Installing additional Conda packages: ${{ inputs.conda-packages }}"
             conda install -n ci_env -c conda-forge $(echo "${{ inputs.conda-packages }}" | tr ',' ' ') -y
           else
-            echo "ℹ️ No additional packages specified, basic Python + numpy only"
-            conda install -n ci_env -c conda-forge numpy -y
+            echo "📭 No extra Conda packages specified"
           fi
-
   
       - name: Install Base CI Dependencies
+        shell: bash -l {0}
         run: |
           pip install jupyter nbval nbconvert bandit
   
       - name: Install Local Requirements (optional pip-only)
         shell: bash -l {0}
         run: |
-          set -e
           NOTEBOOK="${{ matrix.notebook }}"
           REQFILE="$(dirname "$NOTEBOOK")/requirements.txt"
   
-          if [ "${{ inputs.use-conda }}" == "true" ]; then
-            echo "🔁 Activating Conda for optional pip requirements..."
-            source /usr/share/miniconda/etc/profile.d/conda.sh
-            conda activate ci_env
-          else
-            echo "🐍 Using system Python"
-          fi
+          source /usr/share/miniconda/etc/profile.d/conda.sh
+          conda activate ci_env
   
-          echo "🔍 Checking for $REQFILE..."
+          echo "🔍 Using Python:" $(which python)
+          python -c "import numpy; print('✅ numpy version:', numpy.__version__)"
+  
           if [ -f "$REQFILE" ]; then
-            echo "📦 Installing additional pip requirements from $REQFILE"
+            echo "📦 Installing pip-only requirements from $REQFILE"
             pip install -r "$REQFILE"
           else
-            echo "ℹ️ No local requirements.txt found — continuing"
+            echo "ℹ️ No local requirements.txt found — skipping"
           fi
   
       - name: Validate Notebook
@@ -207,17 +198,14 @@ jobs:
         run: |
           set -e
           NOTEBOOK="${{ matrix.notebook }}"
-          
-          if [ "${{ inputs.use-conda }}" == "true" ]; then
-            echo "🔁 Reactivating Conda for validation..."
-            source /usr/share/miniconda/etc/profile.d/conda.sh
-            conda init
-            conda activate ci_env
-          else
-            echo "🐍 Using system Python"
-          fi
-
-          echo "✅ Clearing outputs and validating: $NOTEBOOK"
+  
+          source /usr/share/miniconda/etc/profile.d/conda.sh
+          conda activate ci_env
+  
+          echo "🧪 Python in use:" $(which python)
+          python -c "import numpy; print('✅ numpy check:', numpy.__version__)"
+  
+          echo "✅ Validating notebook: $NOTEBOOK"
           jupyter nbconvert --clear-output --inplace "$NOTEBOOK"
           pytest --nbval --nbval-cell-timeout=4000 "$NOTEBOOK"
   
@@ -226,15 +214,9 @@ jobs:
         run: |
           set -e
           NOTEBOOK="${{ matrix.notebook }}"
-
-          if [ "${{ inputs.use-conda }}" == "true" ]; then
-            echo "🔁 Reactivating Conda for execution..."
-            source /usr/share/miniconda/etc/profile.d/conda.sh
-            conda init
-            conda activate ci_env
-          else
-            echo "🐍 Using system Python"
-          fi
+  
+          source /usr/share/miniconda/etc/profile.d/conda.sh
+          conda activate ci_env
   
           echo "🚀 Executing notebook: $NOTEBOOK"
           if ! jupyter nbconvert --to notebook --execute --inplace "$NOTEBOOK"; then
@@ -244,11 +226,15 @@ jobs:
   
       - name: Security Scan Notebook
         if: inputs.security-scan == true
+        shell: bash -l {0}
         run: |
           NOTEBOOK="${{ matrix.notebook }}"
           PYFILE="${NOTEBOOK%.ipynb}.py"
   
-          echo "🔐 Converting to script for Bandit scan: $NOTEBOOK"
+          source /usr/share/miniconda/etc/profile.d/conda.sh
+          conda activate ci_env
+  
+          echo "🔐 Converting $NOTEBOOK to script for Bandit scan"
           jupyter nbconvert --to script "$NOTEBOOK"
           bandit "$PYFILE"
   
@@ -265,17 +251,12 @@ jobs:
   
           tar -czf "failed-${SAFE_NAME}.tar.gz" -C upload_failed .
   
-        # Upload artifact
       - name: Upload Failed Notebook Artifact
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: failed-${{ matrix.notebook }}
           path: ${{ matrix.notebook }}
-
-
-    
-
 
 
 
