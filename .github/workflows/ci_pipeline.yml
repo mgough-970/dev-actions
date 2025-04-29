@@ -194,14 +194,27 @@ jobs:
           echo "No local requirements.txt for $ipynb_file"
         fi
 
-    - name: Validate Notebook (Conda)
-      if: inputs.use-conda == true
-      shell: bash -l {0}
+    - name: Validate Notebooks
       run: |
-        echo "Activating conda environment ci_env"
-        eval "$(conda shell.bash hook)"
-        conda activate ci_env
+        if [ "${{ inputs.use-conda }}" == "true" ]; then
+          echo "Setting up Conda environment"
+          source ~/miniconda3/etc/profile.d/conda.sh
+          conda activate ci_env
+    
+          echo "Installing requirements.txt inside conda environment"
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+        else
+          echo "Installing requirements.txt in system Python"
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+        fi
+    
+        echo "Running validation"
         pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
+      shell: /usr/bin/bash -l {0}
 
 
     - name: Validate Notebook (No Conda)
@@ -209,20 +222,27 @@ jobs:
       run: |
         pytest --nbval --nbval-cell-timeout=4000 "${{ matrix.notebook }}"
 
-    - name: Execute Notebook (Conda)
-      if: inputs.use-conda == true
-      shell: bash -l {0}
+    - name: Execute Notebooks
       run: |
-        echo "Activating conda environment ci_env"
-        eval "$(conda shell.bash hook)"
-        conda activate ci_env
-        jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
-
+        if [ "${{ inputs.use-conda }}" == "true" ]; then
+          echo "Setting up Conda environment"
+          source ~/miniconda3/etc/profile.d/conda.sh
+          conda activate ci_env
     
-    - name: Execute Notebook (No Conda)
-      if: inputs.use-conda != true
-      run: |
+          echo "Installing requirements.txt inside conda environment"
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+        else
+          echo "Installing requirements.txt in system Python"
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+        fi
+    
+        echo "Executing notebook: ${{ matrix.notebook }}"
         jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
+      shell: /usr/bin/bash -l {0}
 
 
 
