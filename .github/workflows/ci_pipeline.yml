@@ -203,15 +203,8 @@ jobs:
     
         if [ "${{ inputs.use-conda }}" == "true" ]; then
           echo "🔧 Setting up Conda environment..."
-    
-          # Locate conda.sh dynamically (GitHub runners use different paths)
-          CONDA_SH=$(find / -name conda.sh 2>/dev/null | head -n 1)
-          if [ -z "$CONDA_SH" ]; then
-            echo "❌ conda.sh not found — cannot activate Conda"
-            exit 1
-          fi
-    
-          source "$CONDA_SH"
+          
+          source /usr/share/miniconda/etc/profile.d/conda.sh
           conda activate ci_env
     
           if [ -f "$REQFILE" ]; then
@@ -252,14 +245,7 @@ jobs:
         if [ "${{ inputs.use-conda }}" == "true" ]; then
           echo "🔧 Setting up Conda environment..."
     
-          # Locate Conda bootstrap
-          CONDA_SH=$(find / -name conda.sh 2>/dev/null | head -n 1)
-          if [ -z "$CONDA_SH" ]; then
-            echo "❌ conda.sh not found — cannot activate Conda"
-            exit 1
-          fi
-    
-          source "$CONDA_SH"
+          source /usr/share/miniconda/etc/profile.d/conda.sh
           conda activate ci_env
     
           if [ -f "$REQFILE" ]; then
