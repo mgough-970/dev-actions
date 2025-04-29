@@ -192,6 +192,15 @@ jobs:
           else
             echo "ℹ️ No local requirements.txt found — skipping"
           fi
+          
+      - name: Install Jupyter Kernel
+        shell: bash -l {0}
+        run: |
+          source /usr/share/miniconda/etc/profile.d/conda.sh
+          conda activate ci_env
+          echo "✅ Installing Jupyter kernel for ci_env"
+          pip install ipykernel
+          python -m ipykernel install --user --name=ci_env --display-name "Python (ci_env)"
   
       - name: Validate Notebook
         shell: bash -l {0}
