@@ -150,7 +150,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
-  
+          
+      - name: Add conda to system path
+        run: |
+          echo $CONDA/bin >> $GITHUB_PATH  
+          
       - name: Set up Conda Environment
         if: inputs.use-conda == true
         shell: bash -l {0}
