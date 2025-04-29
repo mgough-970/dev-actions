@@ -178,23 +178,24 @@ jobs:
             set -e
             NOTEBOOK="${{ matrix.notebook }}"
             REQFILE="$(dirname "$NOTEBOOK")/requirements.txt"
-    
+        
             if [ "${{ inputs.use-conda }}" == "true" ]; then
-              echo "🔧 Activating Conda environment before installing requirements..."
+              echo "🔧 Activating Conda environment before installing pip-only requirements..."
               source /usr/share/miniconda/etc/profile.d/conda.sh
               conda activate ci_env
             else
-              echo "🐍 Using system Python."
+              echo "🐍 Using system Python for installation."
             fi
-    
-            echo "🔍 Checking for $REQFILE..."
+        
+            echo "🔍 Checking for optional $REQFILE..."
+        
             if [ -f "$REQFILE" ]; then
-              echo "📦 Installing local requirements from $REQFILE"
+              echo "📦 Installing local pip-only requirements from $REQFILE"
               pip install -r "$REQFILE"
             else
-              echo "❌ ERROR: requirements.txt not found for notebook $NOTEBOOK"
-              exit 1
+              echo "⚠️ No local requirements.txt found — continuing without error"
             fi
+
     
         - name: Validate Notebook
           shell: bash -l {0}
