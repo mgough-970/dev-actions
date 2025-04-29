@@ -211,6 +211,7 @@ jobs:
           if [ "${{ inputs.use-conda }}" == "true" ]; then
             echo "🔁 Reactivating Conda for validation..."
             source /usr/share/miniconda/etc/profile.d/conda.sh
+            conda init
             conda activate ci_env
           else
             echo "🐍 Using system Python"
@@ -231,6 +232,7 @@ jobs:
           if [ "${{ inputs.use-conda }}" == "true" ]; then
             echo "🔁 Reactivating Conda for execution..."
             source /usr/share/miniconda/etc/profile.d/conda.sh
+            conda init
             conda activate ci_env
           else
             echo "🐍 Using system Python"
