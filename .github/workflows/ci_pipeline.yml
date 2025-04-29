@@ -139,7 +139,7 @@ jobs:
       matrix:
         notebook: ${{ fromJson(needs.detect-changes.outputs.notebooks_json) }}
       fail-fast: false
-      max-parallel: 4
+      #max-parallel: 4
   
     steps:
       - uses: actions/checkout@v4
