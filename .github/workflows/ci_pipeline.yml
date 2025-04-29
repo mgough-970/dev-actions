@@ -244,6 +244,18 @@ jobs:
         jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
       shell: /usr/bin/bash -l {0}
 
+    - name: Execute Notebook (system Python)
+      run: |
+        echo "Installing requirements.txt using system pip..."
+        if [ -f requirements.txt ]; then
+          pip install -r requirements.txt
+        else
+          echo "No requirements.txt found — continuing without installs."
+        fi
+    
+        echo "Executing notebook: ${{ matrix.notebook }}"
+        jupyter nbconvert --to notebook --execute --inplace "${{ matrix.notebook }}"
+      shell: /usr/bin/bash -l {0}
 
 
     - name: Security Scan Notebook
