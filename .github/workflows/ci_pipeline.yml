@@ -249,13 +249,22 @@ jobs:
           mkdir -p failed_notebooks
           cp "$NOTEBOOK" "failed_notebooks/${SAFE_NAME}"
           tar -czf "failed-${SAFE_NAME}.tar.gz" -C failed_notebooks .
-  
+          
+      - name: Sanitize Artifact Name
+        if: failure()
+        shell: bash
+        run: |
+          NOTEBOOK="${{ matrix.notebook }}"
+          ARTIFACT_NAME=$(echo "$NOTEBOOK" | sed 's#/#__#g')
+          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+
       - name: Upload Failed Notebook Artifact
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: failed-${{ matrix.notebook }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: ${{ matrix.notebook }}
+
 
 
 
