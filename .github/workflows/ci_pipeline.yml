@@ -236,7 +236,7 @@ jobs:
   
           echo "🔐 Converting to .py for Bandit scan: $PYFILE"
           jupyter nbconvert --to script "$NOTEBOOK"
-          bandit "$PYFILE"
+          bandit -lll -iii "$PYFILE"
   
       - name: Upload Notebook if Failure
         if: failure()
