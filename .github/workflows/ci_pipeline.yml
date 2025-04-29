@@ -159,20 +159,21 @@ jobs:
         if: inputs.use-conda == true
         shell: bash -l {0}
         run: |
-          echo "🔧 Creating Conda environment..."
-          conda --version
-          ENV_NAME="ci_env"
-          conda create -n $ENV_NAME python=${{ inputs.python-version }} -y
-  
+          echo "🔧 Creating Conda environment with conda-forge packages..."
+          source /usr/share/miniconda/etc/profile.d/conda.sh
+          conda create --yes --solver=classic -n ci_env -c conda-forge python=${{ inputs.python-version }}
+          
           if [[ -n "${{ inputs.conda-environment-file }}" ]]; then
-            echo "📦 Installing from Conda environment file: ${{ inputs.conda-environment-file }}"
-            conda env update -n $ENV_NAME -f "${{ inputs.conda-environment-file }}"
+            echo "📦 Installing environment file: ${{ inputs.conda-environment-file }}"
+            conda env update -n ci_env -f "${{ inputs.conda-environment-file }}"
           elif [[ -n "${{ inputs.conda-packages }}" ]]; then
-            echo "📦 Installing Conda packages: ${{ inputs.conda-packages }}"
-            conda install -n $ENV_NAME -c conda-forge $(echo "${{ inputs.conda-packages }}" | tr ',' ' ') -y
+            echo "📦 Installing additional Conda packages: ${{ inputs.conda-packages }}"
+            conda install -n ci_env -c conda-forge $(echo "${{ inputs.conda-packages }}" | tr ',' ' ') -y
           else
-            echo "📭 No extra Conda packages specified"
+            echo "ℹ️ No additional packages specified, basic Python + numpy only"
+            conda install -n ci_env -c conda-forge numpy -y
           fi
+
   
       - name: Install Base CI Dependencies
         run: |
