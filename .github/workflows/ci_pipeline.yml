@@ -130,7 +130,7 @@ jobs:
         echo "static_changed=$([[ -n \"$STATIC_CHANGED\" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
 
 
-
+  
   validate-and-execute:
     needs: detect-changes
     runs-on: ubuntu-latest
@@ -155,24 +155,29 @@ jobs:
         if: inputs.use-conda == true
         shell: bash -l {0}
         run: |
-          echo "🔧 Creating Conda environment with conda-forge packages..."
+          echo "🔧 Creating Conda environment..."
           source /usr/share/miniconda/etc/profile.d/conda.sh
           conda create --yes --solver=classic -n ci_env -c conda-forge python=${{ inputs.python-version }}
   
           if [[ -n "${{ inputs.conda-environment-file }}" ]]; then
-            echo "📦 Installing from Conda environment file: ${{ inputs.conda-environment-file }}"
+            echo "📦 Installing from Conda environment file"
             conda env update -n ci_env -f "${{ inputs.conda-environment-file }}"
           elif [[ -n "${{ inputs.conda-packages }}" ]]; then
-            echo "📦 Installing additional Conda packages: ${{ inputs.conda-packages }}"
+            echo "📦 Installing Conda packages: ${{ inputs.conda-packages }}"
             conda install -n ci_env -c conda-forge $(echo "${{ inputs.conda-packages }}" | tr ',' ' ') -y
-          else
-            echo "📭 No extra Conda packages specified"
           fi
   
-      - name: Install Base CI Dependencies
+      - name: Install Base CI Tools + Kernel Registration
         shell: bash -l {0}
         run: |
-          pip install jupyter nbval nbconvert bandit
+          source /usr/share/miniconda/etc/profile.d/conda.sh
+          conda activate ci_env
+  
+          echo "📦 Installing base CI packages (jupyter, nbval, nbconvert, bandit, ipykernel)..."
+          pip install jupyter nbval nbconvert bandit ipykernel
+  
+          echo "🧠 Registering Jupyter kernel for ci_env"
+          python -m ipykernel install --user --name=ci_env --display-name "Python (ci_env)"
   
       - name: Install Local Requirements (optional pip-only)
         shell: bash -l {0}
@@ -183,36 +188,23 @@ jobs:
           source /usr/share/miniconda/etc/profile.d/conda.sh
           conda activate ci_env
   
-          echo "🔍 Using Python:" $(which python)
-          python -c "import numpy; print('✅ numpy version:', numpy.__version__)"
-  
           if [ -f "$REQFILE" ]; then
-            echo "📦 Installing pip-only requirements from $REQFILE"
+            echo "📦 Installing requirements: $REQFILE"
             pip install -r "$REQFILE"
           else
             echo "ℹ️ No local requirements.txt found — skipping"
           fi
-          
-      - name: Install Jupyter Kernel
-        shell: bash -l {0}
-        run: |
-          source /usr/share/miniconda/etc/profile.d/conda.sh
-          conda activate ci_env
-          echo "✅ Installing Jupyter kernel for ci_env"
-          pip install ipykernel
-          python -m ipykernel install --user --name=ci_env --display-name "Python (ci_env)"
   
       - name: Validate Notebook
         shell: bash -l {0}
         run: |
-          set -e
           NOTEBOOK="${{ matrix.notebook }}"
   
           source /usr/share/miniconda/etc/profile.d/conda.sh
           conda activate ci_env
   
-          echo "🧪 Python in use:" $(which python)
-          python -c "import numpy; print('✅ numpy check:', numpy.__version__)"
+          echo "🧪 Python: $(which python)"
+          python -c "import numpy; print('✅ numpy version:', numpy.__version__)"
   
           echo "✅ Validating notebook: $NOTEBOOK"
           jupyter nbconvert --clear-output --inplace "$NOTEBOOK"
@@ -221,14 +213,13 @@ jobs:
       - name: Execute Notebook
         shell: bash -l {0}
         run: |
-          set -e
           NOTEBOOK="${{ matrix.notebook }}"
   
           source /usr/share/miniconda/etc/profile.d/conda.sh
           conda activate ci_env
   
           echo "🚀 Executing notebook: $NOTEBOOK"
-          if ! jupyter nbconvert --to notebook --execute --inplace "$NOTEBOOK"; then
+          if ! jupyter nbconvert --to notebook --execute --inplace "$NOTEBOOK" --ExecutePreprocessor.kernel_name=ci_env; then
             echo "⚠️ Execution failed — inserting failure marker"
             python .github/scripts/insert_failure_message.py "$NOTEBOOK"
           fi
@@ -243,7 +234,7 @@ jobs:
           source /usr/share/miniconda/etc/profile.d/conda.sh
           conda activate ci_env
   
-          echo "🔐 Converting $NOTEBOOK to script for Bandit scan"
+          echo "🔐 Converting to .py for Bandit scan: $PYFILE"
           jupyter nbconvert --to script "$NOTEBOOK"
           bandit "$PYFILE"
   
@@ -253,12 +244,11 @@ jobs:
         run: |
           NOTEBOOK="${{ matrix.notebook }}"
           SAFE_NAME=$(echo "$NOTEBOOK" | sed 's#/#__#g')
-          echo "Uploading failed notebook as: failed-${SAFE_NAME}"
   
-          mkdir -p upload_failed
-          cp "$NOTEBOOK" "upload_failed/${SAFE_NAME}"
-  
-          tar -czf "failed-${SAFE_NAME}.tar.gz" -C upload_failed .
+          echo "💾 Archiving failed notebook: $SAFE_NAME"
+          mkdir -p failed_notebooks
+          cp "$NOTEBOOK" "failed_notebooks/${SAFE_NAME}"
+          tar -czf "failed-${SAFE_NAME}.tar.gz" -C failed_notebooks .
   
       - name: Upload Failed Notebook Artifact
         if: failure()
