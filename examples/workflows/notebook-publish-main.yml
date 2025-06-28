@@ -1,0 +1,50 @@
+# Example conceptual workflow for actions on merge to main branch
+# This file is illustrative. The actual JupyterBook build and deployment
+# is handled by a separate workflow (like the provided jupyterbook_build.yml)
+# that triggers on push to the main branch.
+
+name: Main Branch Operations Post-Merge
+
+on:
+  push:
+    branches:
+      - main # Or your primary branch
+
+jobs:
+  confirm-merge-and-trigger-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Post-Merge Information
+        run: |
+          echo "This workflow represents actions taken after a merge to the main branch."
+          echo "The primary action of building and deploying the JupyterBook is typically"
+          echo "handled by a dedicated workflow that triggers on 'push' to the main branch."
+          echo "Please refer to 'jupyterbook_build.yml' (or the equivalent in your repository)"
+          echo "which uses notebooks from the 'gh-storage' branch to build the documentation."
+          echo ""
+          echo "No direct calls to other reusable workflows are made from this example file, as it's illustrative."
+          echo "Other actions on merge to main could include:"
+          echo "- Creating releases"
+          echo "- Sending notifications"
+          echo "- Further integration tests"
+
+  # Placeholder for other main branch actions if needed
+  # other-main-branch-job:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - run: echo "Performing other main branch tasks..."
+
+# Note:
+# To enable the JupyterBook publishing process:
+# 1. Ensure you have a workflow file in your repository's .github/workflows/ directory
+#    (e.g., copied from this project's .github/workflows/jupyterbook_build.yml or a similar one).
+# 2. That workflow should be configured to trigger on pushes to your main branch.
+# 3. It will then check out the 'gh-storage' branch for executed notebooks and build
+#    the JupyterBook, deploying it to GitHub Pages.
+#
+# This example file (`notebook-publish-main.yml`) is just a conceptual guide.
+# The actual publishing is driven by the presence and configuration of the
+# JupyterBook building workflow itself in the target repository.

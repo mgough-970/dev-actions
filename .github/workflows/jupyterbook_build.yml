@@ -1,0 +1,328 @@
+name: Build and Deploy JupyterBook
+
+on:
+  push:
+    branches:
+      - main # Or your primary branch
+
+jobs:
+  build-and-deploy-book:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # Needed for peaceiris/actions-gh-pages to push to gh-pages
+      # Add other permissions if your build process needs them
+    inputs:
+      post-processing-script:
+        description: "Optional: Path to a post-processing script to run after building HTML (e.g., 'scripts/jdaviz_image_replacement.sh'). Path relative to checked-out main_repo."
+        required: false
+        type: string
+        default: ''
+
+    steps:
+      - name: Checkout Main Repository Content
+        uses: actions/checkout@v4
+        with:
+          path: main_repo # Checkout main repo content (for _config.yml, _toc.yml, scripts)
+
+      - name: Checkout gh-storage Branch Notebooks
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }} # Checkout the same repository
+          ref: gh-storage
+          path: gh_storage_content # Checkout gh-storage branch into a subfolder
+          token: ${{ secrets.GITHUB_TOKEN }} # Standard token should be enough for checkout
+
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@v6.0.1
+        with:
+          python-version: '3.11' # Or your preferred Python version for JupyterBook
+          enable-cache: true
+
+      - name: Install JupyterBook and Dependencies
+        working-directory: ./main_repo # Run in context of main_repo checkout
+        run: |
+          # Install JupyterBook
+          uv pip install jupyter-book
+          # Install any other dependencies needed for your book build, e.g., from a requirements file for the book
+          if [ -f "docs/requirements.txt" ]; then
+            uv pip install -r "docs/requirements.txt"
+          elif [ -f "requirements-docs.txt" ]; then
+            uv pip install -r "requirements-docs.txt"
+          fi
+
+      - name: Prepare Notebooks for JupyterBook Build
+        run: |
+          echo "Preparing notebooks for build..."
+          # JupyterBook typically expects notebooks in a specific path defined by _toc.yml, often a 'notebooks' folder.
+          # We will copy the notebooks from gh_storage_content into the expected location within main_repo.
+          # Assuming _config.yml and _toc.yml are in the root of main_repo, and _toc.yml refers to 'notebooks/...'
+
+          # Target directory for notebooks within the main_repo structure for JupyterBook
+          NOTEBOOKS_TARGET_DIR="main_repo/notebooks" # Adjust if your JupyterBook expects them elsewhere
+
+          echo "Removing existing content in ${NOTEBOOKS_TARGET_DIR} if any..."
+          rm -rf "${NOTEBOOKS_TARGET_DIR}"
+          mkdir -p "${NOTEBOOKS_TARGET_DIR}"
+
+          echo "Copying notebooks from gh_storage_content to ${NOTEBOOKS_TARGET_DIR}..."
+          # Check if gh_storage_content/notebooks exists, otherwise copy from gh_storage_content root
+          if [ -d "gh_storage_content/notebooks" ]; then
+            echo "Copying from gh_storage_content/notebooks/"
+            cp -r gh_storage_content/notebooks/* "${NOTEBOOKS_TARGET_DIR}/"
+          else
+            echo "Copying all .ipynb files from gh_storage_content/ root"
+            find gh_storage_content -name '*.ipynb' -exec cp --parents -t "${NOTEBOOKS_TARGET_DIR}/" {} +
+            # The cp --parents command might create subdirectories based on the source.
+            # A simpler cp gh_storage_content/*.ipynb might be enough if notebooks are flat in gh-storage root.
+            # For now, let's refine the copy to ensure notebooks end up directly in NOTEBOOKS_TARGET_DIR
+            # or its subdirectories as they were in gh-storage
+
+            # Robust copy: recreate directory structure from gh_storage_content into NOTEBOOKS_TARGET_DIR
+            # This assumes gh_storage_content itself contains the 'notebooks' folder or similar structure
+            # that _toc.yml expects.
+
+            # If gh-storage stores notebooks like `notebooks/topic1/nb.ipynb`,
+            # and _toc.yml refers to `notebooks/topic1/nb.ipynb`, this should work.
+            # We need to ensure the paths align.
+
+            # Let's assume gh-storage stores notebooks maintaining their original paths (e.g. `notebooks/my_nb.ipynb`)
+            # And main_repo/_toc.yml refers to them as `notebooks/my_nb.ipynb`.
+            # So, we copy the content of gh_storage_content (which is `notebooks/*`) into `main_repo/`
+            # This will effectively place `gh_storage_content/notebooks/*` into `main_repo/notebooks/*`
+
+            # Simpler: copy the entire 'notebooks' directory from gh_storage_content if it exists
+            if [ -d "gh_storage_content/notebooks" ]; then
+                cp -r gh_storage_content/notebooks main_repo/
+            else
+                # If notebooks are at the root of gh-storage, copy them into main_repo/notebooks
+                # This might be too simplistic if gh-storage has other files.
+                echo "Warning: 'notebooks' directory not found in gh-storage. Copying all .ipynb files from root of gh-storage."
+                find gh_storage_content -maxdepth 1 -name '*.ipynb' -exec cp {} "${NOTEBOOKS_TARGET_DIR}/" \;
+            fi
+            echo "Listing content of ${NOTEBOOKS_TARGET_DIR}"
+            ls -R "${NOTEBOOKS_TARGET_DIR}"
+
+      - name: Build JupyterBook
+        working-directory: ./main_repo # Run jupyter-book command from where _config.yml is
+        run: |
+          echo "Building JupyterBook..."
+          # The path to content is usually relative to _config.yml (which is in main_repo root)
+          uv run jupyter-book build .
+          # If your _toc.yml or config specifies a different content directory, adjust the command:
+          # e.g., uv run jupyter-book build my_book_source_folder/
+          # For this setup, '.' should work as we've placed notebooks into main_repo/notebooks/
+
+      - name: Run Post-Processing Script
+        if: env.POST_PROCESSING_SCRIPT != '' && env.POST_PROCESSING_SCRIPT != 'false'
+        working-directory: ./main_repo # Script should run in context of main_repo checkout
+        env:
+          # Users can override this in their repo's copy of jupyterbook_build.yml
+          # or if this workflow were callable, it could be an input.
+          POST_PROCESSING_SCRIPT: 'scripts/jdaviz_image_replacement.sh' # Example default
+        run: |
+          script_path="${POST_PROCESSING_SCRIPT}"
+          if [ -f "$script_path" ]; then
+            echo "Running post-processing script: $script_path"
+            chmod +x "$script_path"
+            "./$script_path" # Execute script relative to working-directory (main_repo)
+          else
+            echo "Warning: Post-processing script '$script_path' not found or not specified correctly."
+            # Decide if this should be a failure. For now, it's a warning.
+            # exit 1
+          fi
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: main_repo/_build/html # Path to the built HTML output
+          # Optional: configure CNAME, custom domain, etc.
+          # user_name: 'github-actions[bot]'
+          # user_email: 'github-actions[bot]@users.noreply.github.com'
+          # publish_branch: gh-pages # Default is gh-pages
+
+      - name: Clean up temporary checkouts
+        if: always() # Always run cleanup
+        run: |
+          echo "Cleaning up temporary directories..."
+          rm -rf ./main_repo
+          rm -rf ./gh_storage_content
+
+# Notes:
+# 1. Ensure your _config.yml and _toc.yml in the main branch are set up to find notebooks
+#    in the 'notebooks/' directory (or adjust NOTEBOOKS_TARGET_DIR and build commands).
+# 2. The GITHUB_TOKEN provided by Actions has permissions to checkout code from the same repo
+#    and to push to gh-pages branch if `permissions: contents: write` is set.
+# 3. If your JupyterBook build has specific requirements (e.g., a kernel for execution during build,
+#    though execution should have happened before reaching gh-storage), ensure they are installed.
+#    This workflow assumes notebooks in gh-storage are already executed.
+# 4. The `Prepare Notebooks` step is crucial. It ensures that the JupyterBook build process
+#    finds the notebooks from `gh-storage` in the locations expected by `_toc.yml`.
+#    The current copy strategy is: if `gh_storage_content/notebooks` exists, copy that whole dir.
+#    Otherwise, copy individual .ipynb files from `gh_storage_content` root to `main_repo/notebooks`.
+#    This might need adjustment based on how notebooks are structured in `gh-storage` and referenced in `_toc.yml`.
+#    A robust method is to ensure `gh-storage` mirrors the exact directory structure that `_toc.yml` expects
+#    (e.g., `gh-storage` contains a `notebooks/` folder at its root).
+#    The `ci_pipeline.yml` stores notebooks with their original paths, so if they were originally in `notebooks/`
+#    then `gh-storage` will also have them in `notebooks/`.
+#    So `cp -r gh_storage_content/notebooks main_repo/` should be the primary method.
+#    And `mkdir -p main_repo/notebooks` before that.
+
+# Refined Prepare Notebooks step:
+# - name: Prepare Notebooks for JupyterBook Build
+#   run: |
+#     NOTEBOOK_SOURCE_ROOT="gh_storage_content" # Root of where notebooks are in gh-storage checkout
+#     NOTEBOOK_DEST_ROOT="main_repo"       # Root of where _config.yml is
+#
+#     # Example: If gh-storage has `notebooks/topic/my.ipynb`
+#     # And _toc.yml refers to `notebooks/topic/my.ipynb`
+#     # Then we need to copy the `notebooks` dir from gh_storage_content into main_repo
+#
+#     if [ -d "${NOTEBOOK_SOURCE_ROOT}/notebooks" ]; then
+#       echo "Copying '${NOTEBOOK_SOURCE_ROOT}/notebooks' to '${NOTEBOOK_DEST_ROOT}/notebooks'..."
+#       mkdir -p "${NOTEBOOK_DEST_ROOT}/notebooks"
+#       cp -r "${NOTEBOOK_SOURCE_ROOT}/notebooks/." "${NOTEBOOK_DEST_ROOT}/notebooks/"
+#     else
+#       # Fallback or other structures if notebooks are not under a 'notebooks' dir in gh-storage
+#       echo "Warning: No 'notebooks' directory found in gh-storage checkout root."
+#       echo "Attempting to copy all .ipynb files if any, but this might not match _toc.yml structure."
+#       mkdir -p "${NOTEBOOK_DEST_ROOT}/notebooks" # Create a default notebooks dir
+#       find "${NOTEBOOK_SOURCE_ROOT}" -name '*.ipynb' -exec cp --parents -t "${NOTEBOOK_DEST_ROOT}/" {} +
+#       # This cp --parents will create path like main_repo/gh_storage_content/notebooks/..., which is not what we want.
+#       # A better fallback:
+#       # find "${NOTEBOOK_SOURCE_ROOT}" -maxdepth 1 -name '*.ipynb' -exec cp {} "${NOTEBOOK_DEST_ROOT}/notebooks/" \;
+#     fi
+#     echo "Final structure in main_repo/notebooks:"
+#     ls -R "${NOTEBOOK_DEST_ROOT}/notebooks"
+# This still needs to be robust. The key is that the paths in `_toc.yml` (relative to `main_repo` root)
+# must match the final location of notebooks copied from `gh_storage_content`.
+# The simplest is if `gh-storage` contains `notebooks/...` and `_toc.yml` refers to `notebooks/...`.
+# Then `cp -R gh_storage_content/notebooks main_repo/` is correct.
+# Let's stick to that assumption for the main copy logic.
+# The `find ... -exec cp --parents` is tricky with target directories.
+# `rsync` is often better for mirroring directory structures.
+# `rsync -av --delete gh_storage_content/notebooks/ main_repo/notebooks/` would be robust.
+# For now, basic `cp -r` for the `notebooks` directory.
+# The `ci_pipeline.yml` stores notebooks with their full path, so if they are in `repo_root/notebooks/*`,
+# then `gh-storage` will have `notebooks/*`.
+# So, the `cp -r gh_storage_content/notebooks main_repo/` should be correct.
+
+# Final simplified "Prepare Notebooks" step:
+#      - name: Prepare Notebooks for JupyterBook Build
+#        run: |
+#          echo "Preparing notebooks for build..."
+#          # Source: gh_storage_content/ (which contains the 'notebooks' directory from original repo)
+#          # Destination: main_repo/ (where _config.yml is, and where jupyter-book will look for 'notebooks')
+#
+#          # Remove any existing 'notebooks' dir in main_repo to ensure clean copy
+#          rm -rf main_repo/notebooks
+#
+#          if [ -d "gh_storage_content/notebooks" ]; then
+#            echo "Copying 'notebooks' directory from gh_storage_content to main_repo..."
+#            cp -R gh_storage_content/notebooks main_repo/
+#          else
+#            echo "ERROR: 'notebooks' directory not found in gh-storage branch content."
+#            echo "The gh-storage branch should contain a 'notebooks' directory with the executed notebooks."
+#            exit 1
+#          fi
+#
+#          echo "Contents of main_repo/notebooks after copy:"
+#          ls -R main_repo/notebooks
+# This assumes the project's notebooks are indeed within a top-level folder named "notebooks".
+# If they can be elsewhere, this preparation step needs to be more dynamic or configurable.
+# For this project, "notebooks/" is a common convention.
+# The script in `ci_pipeline.yml` finds all `*.ipynb` files, so they could be anywhere.
+# The `gh-storage` logic in `ci_pipeline.yml` preserves their original path.
+# So, if a notebook was at `deeply/nested/path/to/notebook.ipynb`, `gh-storage` will have it there.
+# And `_toc.yml` must also point there.
+# This means the `jupyterbook_build.yml` must copy *all* content from `gh_storage_content`
+# that forms the book structure, not just a folder named `notebooks`.
+#
+# Revised "Prepare Notebooks" for robustness:
+# Copy all content from gh_storage_content to main_repo, overwriting.
+# This assumes gh-storage ONLY contains files meant for the book.
+# This is the most straightforward if gh-storage is purely a mirror of book content.
+#
+#      - name: Prepare Content for JupyterBook Build
+#        run: |
+#          echo "Preparing content for build by overlaying gh-storage content onto main_repo checkout..."
+#          # Copy all files from gh_storage_content into main_repo, overwriting main_repo files
+#          # This ensures that executed notebooks (and any other files like images if stored in gh-storage)
+#          # are used, while _config.yml, _toc.yml, etc., from main branch are preserved if not in gh-storage.
+#          # If gh-storage also contains _config.yml, _toc.yml, they would be used.
+#          # This needs to be decided: should gh-storage *only* contain notebooks, or the full book source?
+#          # Plan stated: "store the executed notebook ... into the gh-storage branch".
+#          # This implies gh-storage is for notebooks primarily.
+#          # So, _config.yml, _toc.yml should come from main_repo.
+#
+#          # Let's stick to the idea that gh-storage contains the notebook files/directories as they are in the repo.
+#          # And _config.yml/_toc.yml in main_repo define the structure.
+#          # We need to copy files from gh_storage_content to their respective locations in main_repo.
+#
+#          echo "Copying all content from gh_storage_content to main_repo, overwriting existing files..."
+#          # Use rsync for a robust copy/overlay
+#          # This will copy everything from gh_storage_content into main_repo.
+#          # If gh_storage_content has notebooks/nb.ipynb, it will land in main_repo/notebooks/nb.ipynb
+#          rsync -av --delete gh_storage_content/ main_repo/
+#
+#          echo "Contents of main_repo after rsync:"
+#          ls -AR main_repo
+
+# The rsync approach is good if gh-storage mirrors the entire repo structure for files that are part of the book.
+# However, `ci_pipeline.yml` was designed to only push *processed notebooks*.
+#
+# Final, simpler "Prepare" step, assuming `_config.yml` and `_toc.yml` are in `main_repo` root,
+# and notebooks are referenced relative to that (e.g. in a `notebooks/` dir or other paths).
+# And `gh-storage` contains these notebooks at the same relative paths.
+# This means we need to effectively merge the two checkouts.
+# The `main_repo` checkout has the book's chrome (_config, _toc, custom CSS/JS).
+# The `gh_storage_content` checkout has the executed notebooks.
+# We want the notebooks from `gh_storage_content` to replace any placeholders in `main_repo`.
+
+# Simplest robust approach for "Prepare Content":
+# Assume gh-storage contains *only* the executed notebooks, maintaining their original paths from repo root.
+# Copy these notebooks into the main_repo checkout, overwriting any existing files with the same names/paths.
+# This ensures that the _config.yml and _toc.yml from the main branch are used, and they find the
+# notebooks (which are now the executed versions from gh-storage).
+# This requires `gh-storage` to NOT contain _config.yml or _toc.yml if we want the main branch's versions.
+# `ci_pipeline.yml` only stores .ipynb files to `gh-storage`. This is good.
+#
+# So, the copy should be:
+# For each notebook path N that was stored in gh-storage:
+#   cp gh_storage_content/N main_repo/N
+#
+# This can be achieved by iterating through files in gh_storage_content.
+# (cd gh_storage_content && find . -type f -name '*.ipynb' -print0) | while IFS= read -r -d $'\0' nb_rel_path; do
+#   nb_rel_path_cleaned=$(echo "$nb_rel_path" | sed 's|^\./||') # remove leading ./
+#   mkdir -p "main_repo/$(dirname "$nb_rel_path_cleaned")"
+#   cp "gh_storage_content/$nb_rel_path_cleaned" "main_repo/$nb_rel_path_cleaned"
+# done
+# This is getting complex for a bash script. `rsync` is better if available.
+# `ubuntu-24.04` runner should have rsync.
+
+# Using rsync:
+#      - name: Prepare Content for JupyterBook Build
+#        run: |
+#          echo "Overlaying executed notebooks from gh_storage_content onto main_repo structure..."
+#          # This command copies all content from gh_storage_content into main_repo.
+#          # If a file exists in both, the one from gh_storage_content (executed notebook) wins.
+#          # This assumes gh_storage_content primarily contains *.ipynb files at their correct paths.
+#          # Other files from main_repo (like _config.yml, _toc.yml, custom css/js) will be preserved
+#          # unless gh_storage_content also contains files with the same names (which it shouldn't per ci_pipeline.yml).
+#          rsync -av gh_storage_content/ ./main_repo/
+#
+#          echo "Contents of main_repo/notebooks (or other notebook paths) after rsync:"
+#          # Verify a known notebook path if possible, or ls a common notebook directory
+#          if [ -d "main_repo/notebooks" ]; then
+#            ls -R main_repo/notebooks
+#          else
+#            echo "'main_repo/notebooks' directory does not exist. Listing main_repo root:"
+#            ls -A main_repo
+#          fi
+# This `rsync` strategy seems the most robust for overlaying.
+# It correctly handles the case where `gh-storage` only contains the notebooks,
+# and `main_repo` contains the book scaffolding.
+# Files from `gh_storage_content` will overwrite same-named files in `main_repo`.
+# New files from `gh_storage_content` will be added to `main_repo`.
+# Files only in `main_repo` (like _config.yml) remain untouched if not in `gh_storage_content`.
+# This is the desired overlay behavior.

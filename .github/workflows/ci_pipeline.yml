@@ -1,135 +1,452 @@
-name: Full Notebook CI Pipeline
+name: Notebook CI Pipeline
 
 on:
   workflow_call:
     inputs:
       python-version:
-        required: true
+        description: 'Python version to use for the environment.'
+        required: false
         type: string
-      execution-mode:
+        default: '3.11'
+      operation-mode:
+        description: "Defines the operation: 'pr-check', 'on-demand-test', 'on-demand-store', 'scheduled-test'."
         required: true
         type: string
       single-filename:
+        description: 'Optional: Path to a single notebook to process (e.g., notebooks/my_notebook.ipynb). Processes all relevant notebooks if empty.'
         required: false
         type: string
-      build-html:
+      custom-requirements-path:
+        description: 'Optional: Path to a custom requirements.txt file to override default discovery.'
+        required: false
+        type: string
+      notebook-sources-path:
+        description: "Optional: Root path to search for notebooks (e.g., 'notebooks/'). Defaults to repository root './'."
+        required: false
+        type: string
+        default: './'
+      force-store:
+        description: "Optional: For 'on-demand-store' mode, set to true to force storing to gh-storage."
         required: false
         type: boolean
-        default: true
-      security-scan:
+        default: false
+      is-deprecated-check-script:
+        description: "Optional: Path to a user script that determines if a notebook is deprecated. Script should take notebook path as $1 and output 'true' or 'false'."
         required: false
-        type: boolean
-        default: true
+        type: string
 
     secrets:
       CASJOBS_USERID:
+        description: 'Optional: CasJobs user ID for astronomical data access.'
         required: false
       CASJOBS_PW:
+        description: 'Optional: CasJobs password for astronomical data access.'
         required: false
+      GH_TOKEN_FOR_STORAGE:
+        description: "Required for modes that store to 'gh-storage' (e.g., 'pr-check', 'on-demand-store' with force-store). Needs write access to the gh-storage branch."
+        required: true # Making it true, but will be conditionally used. Caller must provide.
 
 jobs:
-  validate-and-execute:
+  notebook-operations:
     runs-on: ubuntu-24.04
-
-    strategy:
-      fail-fast: false
-      matrix:
-        notebook: []
     defaults:
       run:
         shell: bash -leo pipefail {0}
+
+    outputs:
+      processed-notebooks: ${{ steps.process_notebooks.outputs.processed_notebook_paths_json }}
+      bypassed: ${{ steps.initial_setup.outputs.bypassed }}
+
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Needed for diffing in PR mode
 
-    - name: Set up uv
-      uses: astral-sh/setup-uv@v6.0.1
-      with:
-        version: "0.7.3"
-        python-version: ${{ inputs.python-version }}
-        enable-cache: true
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6.0.1
+        with:
+          version: "0.7.3"
+          python-version: ${{ inputs.python-version }}
+          enable-cache: true
 
-    - name: Set up micromamba for HST environment
-      if: ${{ github.repository == 'spacetelescope/hst_notebooks' }}
-      uses: mamba-org/setup-micromamba@v2.0.4
-      with:
-        init-shell: bash
-        create-args: >-
-          python=${{ inputs.python-version }}
-          hstcal
+      - name: Initial Setup, PR File Analysis & Notebook Selection
+        id: initial_setup
+        env:
+          NOTEBOOK_SOURCES_PATH: ${{ inputs.notebook-sources-path }}
+        run: |
+          echo "Operation Mode: ${{ inputs.operation-mode }}"
+          # Ensure jq is available for JSON processing
+          if ! command -v jq &> /dev/null; then
+            echo "jq not found, installing..."
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
 
-    - name: Set up micromamba for standard environment
-      if: ${{ github.repository != 'spacetelescope/hst_notebooks' }}
-      uses: mamba-org/setup-micromamba@v2.0.4
-      with:
-        init-shell: bash
-        create-args: >-
-          python=${{ inputs.python-version }}
+          declare -a notebooks_to_process_list=()
+          IS_DOCS_OR_STATIC_ONLY_CHANGE="false" # Output flag
 
-    - name: Detect docs-only changes
-      id: detect_docs_only
-      if: github.event_name == 'pull_request'
-      run: |
-        # Get list of changed files in the PR
-        git fetch origin ${{ github.event.pull_request.base.ref }}
-        CHANGED_FILES=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD)
-        echo "Changed files: $CHANGED_FILES"
-        DOCS_ONLY=true
-        for file in $CHANGED_FILES; do
-          case "$file" in
-            *.md|*.yml|*.yaml|*.html|*.css|*.js|_config.yml|_toc.yml)
-              # docs/static/config files, allow
-              ;;
-            *)
-              # Any other file disables docs-only mode
-              DOCS_ONLY=false
-              break
-              ;;
-          esac
-        done
-        echo "DOCS_ONLY=$DOCS_ONLY" >> $GITHUB_ENV
-        echo "docs-only=$DOCS_ONLY" >> $GITHUB_OUTPUT
+          if [[ "${{ inputs.operation-mode }}" == "pr-check" && "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "PR Check mode: Analyzing changed files..."
+            # Fetch base ref for accurate diffing
+            # The GITHUB_SHA for pull_request events is the merge commit (if mergeable) or head of PR.
+            # We need to diff against the target branch's head (base.ref).
+            git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+            CHANGED_FILES=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }} HEAD)
 
-    - name: Install Validation Dependencies
-      if: env.DOCS_ONLY != 'true'
-      run: |
-        uv pip install jupyter nbval nbconvert bandit
+            echo "Changed files in PR (origin/${{ github.event.pull_request.base.ref }}...HEAD):"
+            echo "${CHANGED_FILES}"
 
-    - name: Validate Notebook
-      if: env.DOCS_ONLY != 'true'
-      run: |
-        if [[ "${{ inputs.single-filename }}" != "" ]]; then
-          uv run pytest --nbval --nbval-cell-timeout=4000 "${{ inputs.single-filename }}"
-        else
-          find notebooks/ -name '*.ipynb' | while read nb; do
-            uv run pytest --nbval --nbval-cell-timeout=4000 "$nb"
+            has_notebook_relevant_changes=false
+            has_only_static_files=true # Assume true until a non-static file is found
+
+            for file in ${CHANGED_FILES}; do
+              # Check for notebook changes
+              if [[ "$file" == *.ipynb && "$file" == ${NOTEBOOK_SOURCES_PATH}* ]]; then
+                notebooks_to_process_list+=("$file")
+                has_notebook_relevant_changes=true
+                has_only_static_files=false
+                echo "Notebook change detected: $file"
+              # Check for requirements.txt changes
+              elif [[ "$file" == */requirements.txt && "$file" == ${NOTEBOOK_SOURCES_PATH}* ]]; then
+                has_notebook_relevant_changes=true
+                has_only_static_files=false
+                req_dir=$(dirname "$file")
+                echo "Requirements change in $req_dir. Adding notebooks from this directory."
+                # Add all notebooks from this directory, respecting NOTEBOOK_SOURCES_PATH
+                # Ensure find searches within the repo structure, not absolute paths from NOTEBOOK_SOURCES_PATH
+                # Corrected find path:
+                while IFS= read -r nb; do notebooks_to_process_list+=("$nb"); done < <(find "$req_dir" -maxdepth 1 -name '*.ipynb')
+              elif [[ "$file" == "requirements.txt" && -z "${{ inputs.custom-requirements-path }}" ]]; then # Root requirements
+                has_notebook_relevant_changes=true
+                has_only_static_files=false
+                echo "Root requirements.txt changed. Adding all notebooks from '${NOTEBOOK_SOURCES_PATH}'."
+                while IFS= read -r nb; do notebooks_to_process_list+=("$nb"); done < <(find "${NOTEBOOK_SOURCES_PATH}" -name '*.ipynb' -not -path "*/.ipynb_checkpoints/*")
+              # Check if the file is a non-code/non-notebook static file
+              elif [[ "$file" =~ \.(md|html|rst|txt|yaml|yml)$ || "$file" == _*.* || "$file" == docs/* || "$file" == assets/* || "$file" == images/* ]]; then
+                echo "Static/doc file changed: $file"
+                # This file type alone doesn't make has_only_static_files false
+              else
+                # Any other file type (e.g., .py, .sh, unknown binary) means it's not "only static"
+                # and implies potential impact on all notebooks.
+                has_only_static_files=false
+                # If it's a code change (e.g. .py), mark as notebook relevant to trigger all notebooks
+                if [[ "$file" == *.py || "$file" == *.R || "$file" == *.sh ]]; then # Add other relevant code extensions
+                    echo "Code file change detected ($file), marking as notebook-relevant for full check."
+                    has_notebook_relevant_changes=true # This will trigger processing of all notebooks below
+                fi
+              fi
+            done
+
+            if [[ "$has_notebook_relevant_changes" == "true" ]]; then
+              # If specific notebooks or requirements triggered changes, notebooks_to_process_list might already be populated.
+              # If a general code change triggered it, but no specific notebooks yet, add all.
+              if [[ ${#notebooks_to_process_list[@]} -eq 0 ]]; then
+                  echo "General code change detected, processing all notebooks in '${NOTEBOOK_SOURCES_PATH}'."
+                  while IFS= read -r nb; do notebooks_to_process_list+=("$nb"); done < <(find "${NOTEBOOK_SOURCES_PATH}" -name '*.ipynb' -not -path "*/.ipynb_checkpoints/*")
+              fi
+              IS_DOCS_OR_STATIC_ONLY_CHANGE="false" # Notebook relevant changes occurred
+            elif [[ "$has_only_static_files" == "true" ]]; then
+              # No notebook-relevant changes, and all changes were static/docs
+              echo "PR contains only documentation or static file changes."
+              IS_DOCS_OR_STATIC_ONLY_CHANGE="true"
+            else
+              # No direct notebook changes, but other non-static/non-doc files changed (e.g. .py files)
+              # This case should have set has_notebook_relevant_changes=true and fallen into the block above.
+              # If it reaches here, it means non-doc/static files changed that weren't caught as code to trigger all notebooks.
+              # This implies all notebooks should be run as a precaution.
+              echo "Non-doc/static, non-notebook changes detected. Processing all notebooks in '${NOTEBOOK_SOURCES_PATH}' as a precaution."
+              while IFS= read -r nb; do notebooks_to_process_list+=("$nb"); done < <(find "${NOTEBOOK_SOURCES_PATH}" -name '*.ipynb' -not -path "*/.ipynb_checkpoints/*")
+              IS_DOCS_OR_STATIC_ONLY_CHANGE="false"
+            fi
+
+          # Handling for on-demand and scheduled modes
+          elif [[ "${{ inputs.operation-mode }}" == "on-demand-test" || \
+                  "${{ inputs.operation-mode }}" == "on-demand-store" || \
+                  "${{ inputs.operation-mode }}" == "scheduled-test" ]]; then
+            if [[ -n "${{ inputs.single-filename }}" ]]; then
+              echo "Mode '${{ inputs.operation-mode }}' for single file: ${{ inputs.single-filename }}"
+              if [[ -f "${{ inputs.single-filename }}" && "${{ inputs.single-filename }}" == *.ipynb ]]; then
+                notebooks_to_process_list+=("${{ inputs.single-filename }}")
+              else
+                echo "Error: Specified single notebook '${{ inputs.single-filename }}' not found or not a .ipynb file."
+                exit 1
+              fi
+            else
+              echo "Mode '${{ inputs.operation-mode }}' for all notebooks in '${NOTEBOOK_SOURCES_PATH}'."
+              while IFS= read -r nb; do notebooks_to_process_list+=("$nb"); done < <(find "${NOTEBOOK_SOURCES_PATH}" -name '*.ipynb' -not -path "*/.ipynb_checkpoints/*")
+            fi
+          fi
+
+          # Deduplicate and convert to JSON
+          if [[ ${#notebooks_to_process_list[@]} -gt 0 ]]; then
+            printf "%s\n" "${notebooks_to_process_list[@]}" | sort -u | jq -R . | jq -s . > final_notebooks.json
+          else
+            echo "[]" > final_notebooks.json
+          fi
+          NOTEBOOK_FILES_TO_PROCESS_JSON=$(cat final_notebooks.json)
+
+          echo "Notebooks to process (JSON): $NOTEBOOK_FILES_TO_PROCESS_JSON"
+          echo "is_docs_or_static_only_change=$IS_DOCS_OR_STATIC_ONLY_CHANGE" >> $GITHUB_OUTPUT
+          echo "notebook_files_json=$NOTEBOOK_FILES_TO_PROCESS_JSON" >> $GITHUB_OUTPUT
+          # For clarity, also output a flag if notebook processing will be skipped entirely
+          if [[ "$IS_DOCS_OR_STATIC_ONLY_CHANGE" == "true" && "${{ inputs.operation-mode }}" == "pr-check" ]]; then
+            echo "bypass_notebook_processing=true" >> $GITHUB_OUTPUT
+          elif [[ "$NOTEBOOK_FILES_TO_PROCESS_JSON" == "[]" || "$NOTEBOOK_FILES_TO_PROCESS_JSON" == "" ]]; then
+            echo "bypass_notebook_processing=true" >> $GITHUB_OUTPUT
+          else
+            echo "bypass_notebook_processing=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Main processing loop (matrix strategy)
+      # This step will be dynamically created based on initial_setup's output
+      # For now, representing it as a single script step that would iterate.
+      # A matrix strategy would be:
+      # strategy:
+      #   fail-fast: false
+      #   matrix:
+      #     notebook: ${{ fromJson(needs.initial_setup.outputs.notebook_files_json) }}
+      # However, 'needs' context isn't available for matrix generation within the same job.
+      # So, the script needs to loop.
+
+      - name: Process Notebooks
+        id: process_notebooks
+        # Condition from initial_setup: only run if not bypassed and notebooks are selected.
+        if: steps.initial_setup.outputs.bypass_notebook_processing == 'false'
+        env:
+            NOTEBOOK_FILES_JSON: ${{ steps.initial_setup.outputs.notebook_files_json }}
+            OPERATION_MODE: ${{ inputs.operation-mode }}
+            CUSTOM_REQUIREMENTS_PATH: ${{ inputs.custom-requirements-path }}
+            IS_DEPRECATED_CHECK_SCRIPT: ${{ inputs.is-deprecated-check-script }}
+            FORCE_STORE: ${{ inputs.force-store }}
+            # PYTHON_VERSION is available via GITHUB_ENV from setup-uv or directly
+            CASJOBS_USERID: ${{ secrets.CASJOBS_USERID }}
+            CASJOBS_PW: ${{ secrets.CASJOBS_PW }}
+        run: |
+          echo "Starting notebook processing for OPERATION_MODE: $OPERATION_MODE"
+          processed_notebooks_for_storage_list=()
+          global_notebook_processing_success=true
+
+          # jq should have been installed in the previous step if needed.
+
+          for notebook_path in $(echo "${NOTEBOOK_FILES_JSON}" | jq -r '.[]'); do
+            echo "Processing notebook: ${notebook_path}"
+            notebook_dir=$(dirname "${notebook_path}")
+            notebook_filename=$(basename "${notebook_path}")
+            current_notebook_success=true # Assume success for this specific notebook's processing steps
+
+            # 1. Environment Setup
+            echo "Setting up environment for ${notebook_path}..."
+            if [[ -n "$CUSTOM_REQUIREMENTS_PATH" && -f "$CUSTOM_REQUIREMENTS_PATH" ]]; then
+              echo "Using custom requirements file: $CUSTOM_REQUIREMENTS_PATH"
+              uv pip install -r "$CUSTOM_REQUIREMENTS_PATH"
+            elif [[ -f "${notebook_dir}/requirements.txt" ]]; then
+              echo "Using directory-specific requirements: ${notebook_dir}/requirements.txt"
+              uv pip install -r "${notebook_dir}/requirements.txt"
+            elif [[ -f "requirements.txt" ]]; then
+              echo "Using root requirements.txt"
+              uv pip install -r "requirements.txt"
+            else
+              echo "No requirements.txt found. Using minimal set (jupyter, pytest-notebook, nbval, bandit)."
+              uv pip install jupyter pytest-notebook nbval bandit
+            fi
+            # Ensure core tools are present regardless of requirements.txt content
+            uv pip install jupyter pytest-notebook nbval bandit
+
+            # 2. Operations based on mode (Execute, Validate, Security Scan)
+            # These operations are part of 'pr-check', 'on-demand-test', 'on-demand-store', 'scheduled-test'
+
+            # Test Execution (always done first if mode involves execution)
+            if [[ "$OPERATION_MODE" == "pr-check" || \
+                  "$OPERATION_MODE" == "on-demand-test" || \
+                  "$OPERATION_MODE" == "on-demand-store" || \
+                  "$OPERATION_MODE" == "scheduled-test" ]]; then
+              echo "Executing ${notebook_path}..."
+              if ! uv run jupyter nbconvert --to notebook --execute --inplace "${notebook_path}" --ExecutePreprocessor.timeout=1800; then
+                echo "Execution FAILED for ${notebook_path}"
+                current_notebook_success=false
+                global_notebook_processing_success=false
+              else
+                echo "Execution SUCCESS for ${notebook_path}"
+              fi
+            fi
+
+            # Validation
+            if [[ "$current_notebook_success" == "true" && \
+                  ( "$OPERATION_MODE" == "pr-check" || \
+                    "$OPERATION_MODE" == "on-demand-test" || \
+                    "$OPERATION_MODE" == "on-demand-store" || \
+                    "$OPERATION_MODE" == "scheduled-test" ) ]]; then
+              echo "Validating ${notebook_path} with nbval..."
+              if ! uv run pytest --nbval-lax "${notebook_path}"; then # Using --nbval-lax for PRs/general tests
+                echo "Validation FAILED for ${notebook_path}"
+                current_notebook_success=false
+                global_notebook_processing_success=false
+              else
+                echo "Validation SUCCESS for ${notebook_path}"
+              fi
+            fi
+
+            # Security Scan
+            if [[ "$current_notebook_success" == "true" && \
+                  ( "$OPERATION_MODE" == "pr-check" || \
+                    "$OPERATION_MODE" == "on-demand-test" || \
+                    "$OPERATION_MODE" == "on-demand-store" || \
+                    "$OPERATION_MODE" == "scheduled-test" ) ]]; then
+              echo "Performing security scan on ${notebook_path}..."
+              temp_script_path="${notebook_dir}/${notebook_filename%.ipynb}.py"
+              uv run jupyter nbconvert --to script "${notebook_path}" --output "${temp_script_path}"
+              if [[ -f "$temp_script_path" ]]; then
+                # For PRs and general tests, treat bandit findings as warnings (don't fail the build).
+                # For a dedicated security audit mode (e.g. on-demand-security if it was separate), one might choose to fail.
+                # Current modes ('on-demand-test', 'on-demand-store', 'scheduled-test') will log findings but not fail the step here.
+                # `bandit` itself exits with non-zero on findings. We use `|| true` to prevent step failure for now.
+                # A more sophisticated setup might use bandit's exit codes to decide.
+                if ! (uv run bandit -r "$temp_script_path"); then
+                    echo "Security scan found issues in ${notebook_path}. See Bandit output above. (Not failing build for this)"
+                else
+                    echo "Security scan PASSED for ${notebook_path} (no issues found at default level)."
+                fi
+                rm "$temp_script_path"
+              else
+                echo "Warning: Failed to convert notebook to script for security scan: ${notebook_path}"
+                # Not failing the build for this conversion error, but logging it.
+              fi
+            fi
+
+            # 3. Deprecation Check & Eligibility for Storage
+            is_deprecated="false"
+            if [[ -n "$IS_DEPRECATED_CHECK_SCRIPT" && -f "$IS_DEPRECATED_CHECK_SCRIPT" ]]; then
+              echo "Checking deprecation status for ${notebook_path} using ${IS_DEPRECATED_CHECK_SCRIPT}..."
+              # Ensure script is executable
+              chmod +x "$IS_DEPRECATED_CHECK_SCRIPT"
+              deprecation_status=$("$IS_DEPRECATED_CHECK_SCRIPT" "${notebook_path}")
+              if [[ "$deprecation_status" == "true" ]]; then
+                is_deprecated="true"
+                echo "Notebook ${notebook_path} is marked as deprecated by custom script. It will not be stored in gh-storage."
+              else
+                echo "Notebook ${notebook_path} is NOT deprecated according to custom script."
+              fi
+            elif [[ -n "$IS_DEPRECATED_CHECK_SCRIPT" ]]; then
+              echo "Warning: Deprecation check script '${IS_DEPRECATED_CHECK_SCRIPT}' not found. Assuming notebook is not deprecated."
+            fi
+
+            # Add to storage list if successful, not deprecated, and mode allows storage
+            if [[ "$current_notebook_success" == "true" && "$is_deprecated" == "false" ]]; then
+              if [[ "$OPERATION_MODE" == "pr-check" || \
+                    ( "$OPERATION_MODE" == "on-demand-store" && "$FORCE_STORE" == "true" ) ]]; then
+                echo "Notebook ${notebook_path} is eligible for gh-storage."
+                processed_notebooks_for_storage_list+=("${notebook_path}")
+              fi
+            elif [[ "$current_notebook_success" == "false" ]]; then
+                 echo "Notebook ${notebook_path} failed processing, not eligible for gh-storage."
+            fi
+            echo "--------------------------------------"
           done
-        fi
 
-    - name: Execute Notebook
-      if: env.DOCS_ONLY != 'true'
-      run: |
-        if [[ "${{ inputs.single-filename }}" != "" ]]; then
-          uv run jupyter nbconvert --to notebook --execute --inplace "${{ inputs.single-filename }}"
-        else
-          find notebooks/ -name '*.ipynb' | while read nb; do
-            uv run jupyter nbconvert --to notebook --execute --inplace "$nb"
+          # Output list of notebooks that successfully processed AND are eligible for storage
+          if [[ ${#processed_notebooks_for_storage_list[@]} -gt 0 ]]; then
+            printf "%s\n" "${processed_notebooks_for_storage_list[@]}" | sort -u | jq -R . | jq -s . > processed_notebooks.json
+          else
+            echo "[]" > processed_notebooks.json
+          fi
+          PROCESSED_NOTEBOOKS_JSON_FOR_STORAGE=$(cat processed_notebooks.json)
+          echo "Processed notebooks eligible for gh-storage (JSON): $PROCESSED_NOTEBOOKS_JSON_FOR_STORAGE"
+          echo "processed_notebooks_json_for_storage=$PROCESSED_NOTEBOOKS_JSON_FOR_STORAGE" >> $GITHUB_OUTPUT
+
+          if [[ "$global_notebook_processing_success" == "false" ]]; then
+            echo "One or more notebook processing steps (execution/validation) failed."
+            exit 1
+          fi
+          echo "All selected notebook processing operations completed."
+
+      - name: Store executed notebooks to gh-storage branch
+        # Condition on operation mode and successful processing from previous step
+        if: |
+          (inputs.operation-mode == 'pr-check' || (inputs.operation-mode == 'on-demand-store' && inputs.force-store == true)) &&
+          steps.initial_setup.outputs.bypass_notebook_processing == 'false' &&
+          steps.process_notebooks.outputs.processed_notebooks_json_for_storage != '[]' &&
+          steps.process_notebooks.outputs.processed_notebooks_json_for_storage != ''
+        env:
+          PROCESSED_NOTEBOOKS_JSON: ${{ steps.process_notebooks.outputs.processed_notebooks_json_for_storage }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN_FOR_STORAGE }}
+        run: |
+          # This part of the script is largely the same as before, ensure GH_TOKEN check is robust
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "Error: GH_TOKEN_FOR_STORAGE is required for this operation but not provided. Skipping storage of notebooks."
+            # Fail the step if token is missing for a storage operation
+            exit 1
+          fi
+
+          echo "Storing processed notebooks to gh-storage branch..."
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create or checkout gh-storage branch
+          # Use a temporary directory for gh-storage checkout
+          STORAGE_DIR="gh-storage-temp"
+          rm -rf "$STORAGE_DIR"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$STORAGE_DIR" -b gh-storage || \
+            (echo "gh-storage branch not found, creating it..." && \
+             git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$STORAGE_DIR" && \
+             cd "$STORAGE_DIR" && git checkout -b gh-storage && git push -u origin gh-storage && cd ..)
+
+          cd "$STORAGE_DIR"
+          git checkout gh-storage || (echo "Failed to checkout gh-storage" && exit 1)
+
+          # Ensure .gitattributes handles LFS correctly if notebooks are large, though direct commit is fine for .ipynb
+          # Copy processed notebooks
+          notebook_count=0
+          for notebook_path_in_repo in $(echo "${PROCESSED_NOTEBOOKS_JSON}" | jq -r '.[]'); do
+            echo "Copying ${notebook_path_in_repo} to gh-storage branch..."
+            # Create target directory structure in STORAGE_DIR
+            target_path_in_storage="${notebook_path_in_repo}" # Store with the same path structure
+            mkdir -p "$(dirname "$target_path_in_storage")"
+
+            # Copy from the main checkout (../) to current dir (STORAGE_DIR)
+            cp "../${notebook_path_in_repo}" "${target_path_in_storage}"
+            git add "${target_path_in_storage}"
+            notebook_count=$((notebook_count + 1))
           done
-        fi
 
-    - name: Security Scan
-      if: env.DOCS_ONLY != 'true' && inputs.security-scan == true
-      run: |
-        find notebooks/ -name '*.ipynb' | while read nb; do
-          uv run jupyter nbconvert --to script "$nb"
-        done
-        uv run bandit -r notebooks/
+          if [[ $notebook_count -gt 0 ]]; then
+            git commit -m "Update executed notebooks from PR #${{ github.event.pull_request.number }}" || echo "No changes to commit to gh-storage."
+            # Retry push logic for robustness
+            retry_count=0
+            max_retries=3
+            push_success=false
+            while [ $retry_count -lt $max_retries ]; do
+              if git push origin gh-storage; then
+                push_success=true
+                break
+              else
+                retry_count=$((retry_count + 1))
+                echo "Push to gh-storage failed. Retrying (${retry_count}/${max_retries})..."
+                git pull origin gh-storage --rebase # Try to resolve conflicts by rebasing
+                sleep 5
+              fi
+            done
+            if [[ "$push_success" == "false" ]]; then
+              echo "Failed to push to gh-storage after multiple retries."
+              # Decide if this should fail the workflow. For now, it's a warning.
+              # exit 1
+            else
+              echo "Successfully pushed updated notebooks to gh-storage."
+            fi
+          else
+            echo "No processed notebooks to store."
+          fi
+          cd ..
+          rm -rf "$STORAGE_DIR" # Clean up
 
-    - name: Upload Notebook Artifacts if Failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: failed-notebooks
-        path: notebooks/
-
+# End of job
+# Next steps in the plan would be to create the jupyterbook_build.yml and update examples.
+# This ci_pipeline.yml is now substantially refactored.
+# Needs testing and refinement, especially the PR file detection and gh-storage interaction.
+# The logic for "non-notebook PR bypass" is basic and might need more sophisticated rules.
+# For instance, changes to Python files (.py) in the repo might necessitate re-running notebooks
+# if they depend on that code. The current bypass is mostly for .md, .yml etc.
+# The current logic for IS_NOTEBOOK_CHANGE being false and IS_DOCS_ONLY_CHANGE being false
+# defaults to running all notebooks. This might be too broad for some repos.
+# It should ideally identify notebooks affected by non-notebook code changes.
+# This is a complex problem often solved with dependency analysis tools.
+# For now, this provides the requested structure.

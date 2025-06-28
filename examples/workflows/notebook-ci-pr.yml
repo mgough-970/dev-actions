@@ -1,34 +1,172 @@
-# Example workflow for running notebook CI on pull requests
-# Copy this file to your repository's .github/workflows/ directory
+# Example workflow for running Notebook CI on Pull Requests
+# This workflow calls the reusable ci_pipeline.yml.
+# Copy this file to your repository's .github/workflows/ directory.
 
 name: Notebook CI - Pull Request
 
 on:
   pull_request:
-    branches: [ main, develop ]
-    paths:
-      - 'notebooks/**'
-      - '*.yml'
-      - '*.yaml'
+    branches: [main, develop] # Adjust to your target branches
+    paths: # Optional: scope to relevant file changes
+      - 'notebooks/**.ipynb'
+      - '*/requirements.txt' # Matches root and directory-specific requirements
       - 'requirements.txt'
-      - 'pyproject.toml'
+      # Add other paths that might affect notebooks, e.g., Python utility scripts
+      - 'src/**.py'
 
 jobs:
-  validate-notebooks:
-    uses: spacetelescope/notebook-ci-actions/.github/workflows/ci_pipeline.yml@main
+  notebook-pr-check:
+    name: Notebook Processing CI
+    # Uses the reusable workflow from this repository (spacetelescope/notebook-ci-actions)
+    # When copied to another repo, this path should be:
+    # uses: spacetelescope/notebook-ci-actions/.github/workflows/ci_pipeline.yml@main
+    uses: ./.github/workflows/ci_pipeline.yml # Use local path for testing within this repo
+    outputs: # Define outputs to be used by other jobs
+      bypass_notebook_processing: ${{ steps.initial_setup.outputs.bypass_notebook_processing }}
+      is_docs_or_static_only_change: ${{ steps.initial_setup.outputs.is_docs_or_static_only_change }}
     with:
-      python-version: "3.11"
-      execution-mode: "validation-only"
-      build-html: false
-      security-scan: true
+      operation-mode: 'pr-check'
+      python-version: '3.11' # Specify your desired Python version
+      # custom-requirements-path: 'path/to/override_requirements.txt' # Optional
+      # notebook-sources-path: 'notebooks/' # Optional, defaults to './'
+      # is-deprecated-check-script: 'path/to/your/check_deprecated.sh' # Optional
+
     secrets:
       CASJOBS_USERID: ${{ secrets.CASJOBS_USERID }}
       CASJOBS_PW: ${{ secrets.CASJOBS_PW }}
+      GH_TOKEN_FOR_STORAGE: ${{ secrets.GH_ACTIONS_TOKEN_FOR_GH_STORAGE || secrets.GITHUB_TOKEN }}
+    # Top-level permissions might be needed if using GITHUB_TOKEN for cross-job operations or gh-storage push
+    # permissions:
+    #   contents: write # If GITHUB_TOKEN is used for pushing to gh-storage by ci_pipeline.yml
 
-  build-docs-preview:
-    uses: spacetelescope/notebook-ci-actions/.github/workflows/ci_html_builder.yml@main
-    with:
-      python-version: "3.11"
-      post-run-script: "scripts/jdaviz_image_replacement.sh"  # Optional
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
+  handle-static-files-pr:
+    name: Handle Static File Changes
+    runs-on: ubuntu-latest
+    needs: notebook-pr-check # Ensure this runs after notebook-pr-check job
+    # Only run this job if notebook processing was bypassed specifically due to static/doc file changes
+    if: needs.notebook-pr-check.outputs.bypass_notebook_processing == 'true' && needs.notebook-pr-check.outputs.is_docs_or_static_only_change == 'true'
+    permissions:
+      contents: write # Needed to push to gh-storage branch
+    steps:
+      - name: Checkout PR code (source of changed static files)
+        uses: actions/checkout@v4
+        with:
+          path: pr_code # Checkout PR code into a specific directory
+          # fetch-depth: 0 # Not strictly needed unless full history is required for diff
+
+      - name: Identify Changed Static Files
+        id: static_changes
+        working-directory: ./pr_code
+        run: |
+          echo "Identifying changed static files in PR to be pushed to gh-storage..."
+          # Diff against the base of the PR to get only files changed in this PR
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+          CHANGED_FILES_IN_PR=$(git diff --name-only origin/${{ github.event.pull_request.base.ref }} HEAD)
+
+          declare -a static_files_to_commit=()
+          echo "Files changed in PR:"
+          echo "${CHANGED_FILES_IN_PR}"
+
+          for file in ${CHANGED_FILES_IN_PR}; do
+            # Define what constitutes a static/doc file more precisely here if needed
+            # This should align with the logic in ci_pipeline.yml's initial_setup that determined is_docs_or_static_only_change
+            if [[ "$file" =~ \.(md|html|rst|txt|yaml|yml)$ || "$file" == _*.* || "$file" == docs/* || "$file" == assets/* || "$file" == images/* ]]; then
+              if [ -f "$file" ]; then # Ensure file exists (was not deleted)
+                static_files_to_commit+=("$file")
+                echo "Static file to commit: $file"
+              fi
+            fi
+          done
+          # Output as a JSON string array for easier consumption in next step, though direct use is also fine
+          if [ ${#static_files_to_commit[@]} -gt 0 ]; then
+            printf "%s\n" "${static_files_to_commit[@]}" | jq -R . | jq -s . > static_files.json
+            echo "static_files_json=$(cat static_files.json)" >> $GITHUB_OUTPUT
+            echo "::set-output name=static_files_list_json::$(cat static_files.json)" # Alternative output method
+          else
+            echo "static_files_json=[]" >> $GITHUB_OUTPUT
+            echo "::set-output name=static_files_list_json::[]"
+          fi
+
+      - name: Commit Static Files to gh-storage
+        if: steps.static_changes.outputs.static_files_json != '[]' && steps.static_changes.outputs.static_files_json != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_ACTIONS_TOKEN_FOR_GH_STORAGE || secrets.GITHUB_TOKEN }}
+          # STATIC_FILES_JSON: ${{ steps.static_changes.outputs.static_files_json }} # Not directly used if files are copied from pr_code
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "Error: Token for gh-storage (GH_ACTIONS_TOKEN_FOR_GH_STORAGE or GITHUB_TOKEN) not provided or empty."
+            exit 1
+          fi
+
+          echo "Setting up git..."
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          STORAGE_DIR="gh-storage-temp"
+          echo "Cloning gh-storage branch or creating if it doesn't exist..."
+          git clone --branch gh-storage --single-branch "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$STORAGE_DIR" 2>/dev/null || \
+          ( echo "gh-storage branch not found. Creating it." && \
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$STORAGE_DIR" && \
+            cd "$STORAGE_DIR" && git checkout -b gh-storage && git push -u origin gh-storage && cd .. )
+
+          cd "$STORAGE_DIR"
+          git checkout gh-storage # Ensure we are on the gh-storage branch
+
+          echo "Copying changed static files from PR (./pr_code) to gh-storage checkout..."
+          # Iterate over the JSON array of files passed from previous step
+          static_files_json_content='${{ steps.static_changes.outputs.static_files_list_json }}'
+          echo "JSON content of files to copy: $static_files_json_content"
+
+          file_copied_count=0
+          for file_rel_path in $(echo "$static_files_json_content" | jq -r '.[]'); do
+            source_file_path="../pr_code/${file_rel_path}" # Path relative to GITHUB_WORKSPACE then pr_code
+            target_file_path="./${file_rel_path}"    # Path relative to STORAGE_DIR (gh-storage root)
+
+            if [ -f "$source_file_path" ]; then
+              echo "Copying '$source_file_path' to '$target_file_path'"
+              mkdir -p "$(dirname "$target_file_path")"
+              cp "$source_file_path" "$target_file_path"
+              git add "$target_file_path"
+              file_copied_count=$((file_copied_count + 1))
+            else
+              echo "Warning: Source file '$source_file_path' not found. Skipping."
+            fi
+          done
+
+          if [[ $file_copied_count -gt 0 ]]; then
+            echo "Committing $file_copied_count static file(s) to gh-storage..."
+            git commit -m "Update static files from PR #${{ github.event.pull_request.number }}" || echo "No changes to commit to gh-storage."
+
+            retry_count=0
+            max_retries=3
+            push_success=false
+            while [ $retry_count -lt $max_retries ]; do
+              if git push origin gh-storage; then
+                push_success=true
+                break
+              else
+                retry_count=$((retry_count + 1))
+                echo "Push to gh-storage failed. Retrying (${retry_count}/${max_retries}). Pulling changes first..."
+                git pull origin gh-storage --rebase # Try to resolve conflicts by rebasing
+                sleep 5
+              fi
+            done
+            if [[ "$push_success" == "false" ]]; then
+              echo "Failed to push static files to gh-storage after multiple retries."
+              # exit 1 # Decide if this should fail the PR check
+            else
+              echo "Successfully pushed static file updates to gh-storage."
+            fi
+          else
+            echo "No static files were found or copied to commit."
+          fi
+
+          cd ..
+          echo "Cleaning up temporary directories..."
+          rm -rf "$STORAGE_DIR"
+          rm -rf "./pr_code" # Clean up the pr_code checkout
+
+# Overall workflow permissions might need adjustment if GITHUB_TOKEN is used for pushing
+# permissions:
+#   contents: write # To allow pushing to gh-storage if GITHUB_TOKEN is used
+#   pull-requests: read # To read PR details

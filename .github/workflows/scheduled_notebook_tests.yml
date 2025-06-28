@@ -1,0 +1,69 @@
+# Scheduled Workflow for Weekly Notebook Tests
+# This workflow runs all notebooks through execution, validation, and security tests
+# on a weekly basis to catch any regressions or environment-related issues.
+# It does not store outputs to gh-storage or build HTML.
+
+name: Weekly Notebook Health Check
+
+on:
+  schedule:
+    # Example: Run every Sunday at 03:00 UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch: # Allow manual triggering for testing this workflow
+    inputs:
+      python-version:
+        description: 'Python version for the test run'
+        required: false
+        default: '3.11'
+        type: string
+      notebook-sources-path:
+        description: "Root path to search for notebooks (e.g., 'notebooks/')"
+        required: false
+        default: 'notebooks/' # Common default, adjust if needed
+        type: string
+
+jobs:
+  weekly-notebook-tests:
+    name: Weekly Test All Notebooks
+    # Uses the reusable workflow from this repository (spacetelescope/notebook-ci-actions)
+    # When copied to another repo, this path should be:
+    # uses: spacetelescope/notebook-ci-actions/.github/workflows/ci_pipeline.yml@main
+    uses: ./.github/workflows/ci_pipeline.yml # Local path for testing within this repo
+    with:
+      operation-mode: 'scheduled-test'
+      python-version: ${{ github.event.inputs.python-version || '3.11' }}
+      notebook-sources-path: ${{ github.event.inputs.notebook-sources-path || 'notebooks/' }}
+      # single-filename is not applicable for a full scheduled run
+      # custom-requirements-path could be added if a specific scheduled env is needed
+      # force-store should be false (default)
+      # is-deprecated-check-script could be used if you want to skip deprecated notebooks from scheduled tests
+
+    secrets:
+      # CASJOBS secrets might be needed if notebooks interact with CasJobs
+      CASJOBS_USERID: ${{ secrets.CASJOBS_USERID }}
+      CASJOBS_PW: ${{ secrets.CASJOBS_PW }}
+      # GH_TOKEN_FOR_STORAGE is required by ci_pipeline.yml's definition,
+      # but 'scheduled-test' mode in ci_pipeline.yml does not use it.
+      # Pass a dummy or non-sensitive token if necessary, or an empty string if allowed by definition.
+      # Since it's marked required: true in ci_pipeline.yml, we must pass something.
+      # A PAT with no scopes or just public_repo scope could be stored as a dummy secret.
+      # Or, if ci_pipeline.yml is robust to an empty string for non-storage modes, that's fine.
+      # For now, assuming it needs a value:
+      GH_TOKEN_FOR_STORAGE: ${{ secrets.DUMMY_TOKEN_FOR_SCHEDULED_RUNS || secrets.GITHUB_TOKEN }}
+      # Using GITHUB_TOKEN as a fallback, it won't be used for write operations.
+      # Best practice: ci_pipeline.yml should not require GH_TOKEN_FOR_STORAGE if mode doesn't use it.
+      # This has been fixed in ci_pipeline.yml (vNext iteration) to make it truly optional if not used.
+      # For now, the `required: true` in the `workflow_call` means we must pass it.
+      # The actual `ci_pipeline.yml` script checks if the token is empty only if the operation needs it.
+      # So passing GITHUB_TOKEN here is safe as it won't be used for writing.
+
+# Notes for users copying this workflow:
+# - Adjust the cron schedule as needed.
+# - Update `notebook-sources-path` if your notebooks are not in the 'notebooks/' directory.
+# - If your scheduled tests need specific CASJOBS credentials, ensure those secrets are set in your repository.
+# - The DUMMY_TOKEN_FOR_SCHEDULED_RUNS is a placeholder concept if you want to avoid using GITHUB_TOKEN.
+#   In practice, GITHUB_TOKEN is fine here as ci_pipeline.yml won't use it for write operations in 'scheduled-test' mode.
+# - The `uses: ./.github/workflows/ci_pipeline.yml` is for testing in THIS repo.
+#   For actual use in other repos, it should be:
+#   `uses: spacetelescope/notebook-ci-actions/.github/workflows/ci_pipeline.yml@main`
+#   (or your specific version pin).

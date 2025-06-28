@@ -1,83 +1,158 @@
-# Example workflow for on-demand notebook testing
-# Copy this file to your repository's .github/workflows/ directory
+# Example workflow for On-Demand Notebook CI & Publishing Operations
+# This workflow allows manual triggering of various operations including:
+# - Testing notebooks (execute, validate, security scan)
+# - Testing and storing notebooks to gh-storage
+# - Testing, storing, and then rebuilding/redeploying HTML documentation
+# - Generating HTML documentation only (from gh-storage or current state)
+#
+# It calls the reusable ci_pipeline.yml for notebook processing and
+# includes logic similar to jupyterbook_build.yml for on-demand HTML generation.
 
-name: Notebook CI - On Demand
+name: Notebook CI & Publish - On Demand
 
 on:
   workflow_dispatch:
     inputs:
-      python-version:
-        description: 'Python version to use'
-        required: false
-        default: '3.11'
-        type: choice
-        options:
-          - '3.9'
-          - '3.10'
-          - '3.11'
-          - '3.12'
-      execution-mode:
-        description: 'Execution mode'
+      operation:
+        description: 'Select the overall operation to perform'
         required: true
-        default: 'full'
+        default: 'test_notebooks'
         type: choice
         options:
-          - 'validation-only'
-          - 'full'
-          - 'quick'
-      single-notebook:
-        description: 'Path to single notebook (optional)'
+          - 'test_notebooks' # Execute, validate, security scan (no store/build)
+          - 'store_notebooks' # Test notebooks & store to gh-storage (no build)
+          - 'store_and_rebuild_html' # Test, store to gh-storage, then rebuild & deploy HTML
+          - 'rebuild_html_only' # Rebuild & deploy HTML from gh-storage (no testing/storing)
+      single_filename:
+        description: 'Path to a single notebook (e.g., notebooks/my_nb.ipynb). Leave empty for all relevant notebooks.'
         required: false
         type: string
-      run-security-scan:
-        description: 'Run security scan'
+      notebook_sources_path:
+        description: "Root path to search for notebooks (e.g., 'notebooks/'). Defaults to repository root './'."
         required: false
-        default: true
-        type: boolean
-      build-documentation:
-        description: 'Build HTML documentation'
+        default: './'
+        type: string
+      python_version:
+        description: 'Python version for notebook/build environment'
         required: false
-        default: true
-        type: boolean
-      skip-deprecated:
-        description: 'Skip deprecated notebooks'
+        default: '3.11'
+        type: string
+      custom_requirements_path:
+        description: 'Optional: Path to a custom requirements.txt file for notebook environment'
         required: false
-        default: true
-        type: boolean
-      post-processing:
-        description: 'Post-processing options'
+        type: string
+      is_deprecated_check_script_path:
+        description: "Optional: Path to script that checks if a notebook is deprecated (for 'store' operations)."
         required: false
-        default: 'jdaviz'
-        type: choice
-        options:
-          - 'none'
-          - 'jdaviz'
-          - 'full'
+        type: string
+      post_processing_script_path_for_html:
+        description: "Optional: Path to a post-processing script for HTML rebuilds (e.g., scripts/jdaviz_image_replacement.sh)."
+        required: false
+        type: string
 
 jobs:
-  on-demand-ci:
-    uses: spacetelescope/notebook-ci-actions/.github/workflows/ci_pipeline.yml@main
+  # Job 1: Process notebooks (test and optionally store)
+  process_notebooks_on_demand:
+    # Only run if operation involves notebook testing/processing
+    if: github.event.inputs.operation == 'test_notebooks' || github.event.inputs.operation == 'store_notebooks' || github.event.inputs.operation == 'store_and_rebuild_html'
+    name: Process Notebooks (${{ github.event.inputs.operation }})
+    uses: ./.github/workflows/ci_pipeline.yml # Local path for testing; use remote for actual repo
     with:
-      python-version: ${{ inputs.python-version }}
-      execution-mode: ${{ inputs.execution-mode }}
-      single-filename: ${{ inputs.single-notebook }}
-      build-html: ${{ inputs.build-documentation }}
-      security-scan: ${{ inputs.run-security-scan }}
-      skip-deprecated: ${{ inputs.skip-deprecated }}
+      operation-mode: ${{ (github.event.inputs.operation == 'test_notebooks' && 'on-demand-test') || 'on-demand-store' }}
+      single-filename: ${{ github.event.inputs.single_filename }}
+      python-version: ${{ github.event.inputs.python_version }}
+      custom-requirements-path: ${{ github.event.inputs.custom_requirements_path }}
+      notebook-sources-path: ${{ github.event.inputs.notebook_sources_path }}
+      is-deprecated-check-script: ${{ github.event.inputs.is_deprecated_check_script_path }}
+      # force-store is true if we intend to store (store_notebooks or store_and_rebuild_html)
+      force-store: ${{ github.event.inputs.operation == 'store_notebooks' || github.event.inputs.operation == 'store_and_rebuild_html' }}
     secrets:
       CASJOBS_USERID: ${{ secrets.CASJOBS_USERID }}
       CASJOBS_PW: ${{ secrets.CASJOBS_PW }}
+      # GH_TOKEN_FOR_STORAGE is needed if force-store can be true
+      GH_TOKEN_FOR_STORAGE: ${{ secrets.GH_TOKEN_FOR_ON_DEMAND_STORAGE || secrets.GITHUB_TOKEN }}
 
-  # Enhanced post-processing based on selection
-  build-docs-on-demand:
-    if: inputs.build-documentation == true
-    uses: spacetelescope/notebook-ci-actions/.github/workflows/ci_html_builder.yml@main
-    with:
-      python-version: ${{ inputs.python-version }}
-      post-run-script: ${{ 
-        inputs.post-processing == 'jdaviz' && 'scripts/jdaviz_image_replacement.sh' ||
-        inputs.post-processing == 'full' && 'scripts/full_post_processing.sh' ||
-        '' 
-      }}
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
+  # Job 2: Build and Deploy HTML on demand
+  build_html_on_demand:
+    # Run if operation is 'store_and_rebuild_html' (needs previous job) or 'rebuild_html_only'
+    if: github.event.inputs.operation == 'store_and_rebuild_html' || github.event.inputs.operation == 'rebuild_html_only'
+    needs: [process_notebooks_on_demand] # Will be skipped if process_notebooks_on_demand is skipped and not 'rebuild_html_only'
+    name: Build & Deploy HTML On Demand
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # For deploying to gh-pages
+
+    steps:
+      - name: Checkout Main Repository Content (for book config)
+        uses: actions/checkout@v4
+        with:
+          path: main_repo
+
+      - name: Checkout gh-storage Branch Notebooks (source for HTML build)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: gh-storage # Assumes notebooks are in gh-storage for these on-demand HTML builds
+          path: gh_storage_content
+          token: ${{ secrets.GH_TOKEN_FOR_ON_DEMAND_STORAGE || secrets.GITHUB_TOKEN }} # Token to read gh-storage
+
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@v6.0.1
+        with:
+          python-version: ${{ github.event.inputs.python_version || '3.11' }}
+          enable-cache: true
+
+      - name: Install JupyterBook and Dependencies
+        working-directory: ./main_repo
+        run: |
+          uv pip install jupyter-book
+          if [ -f "docs/requirements.txt" ]; then uv pip install -r "docs/requirements.txt"; fi
+          if [ -f "requirements-docs.txt" ]; then uv pip install -r "requirements-docs.txt"; fi
+
+      - name: Prepare Content for JupyterBook Build
+        run: |
+          echo "Overlaying executed notebooks from gh_storage_content onto main_repo structure..."
+          rsync -av --delete gh_storage_content/ ./main_repo/
+          echo "Contents of main_repo/notebooks (or other notebook paths) after rsync:"
+          if [ -d "main_repo/notebooks" ]; then ls -R main_repo/notebooks; else ls -A main_repo; fi
+
+      - name: Build JupyterBook
+        working-directory: ./main_repo
+        run: uv run jupyter-book build .
+
+      - name: Run Post-Processing Script for HTML
+        if: github.event.inputs.post_processing_script_path_for_html != ''
+        working-directory: ./main_repo
+        run: |
+          script_path="${{ github.event.inputs.post_processing_script_path_for_html }}"
+          if [ -f "$script_path" ]; then
+            echo "Running post-processing script: $script_path"
+            chmod +x "$script_path"
+            "./$script_path"
+          else
+            echo "Warning: Post-processing script '$script_path' not found."
+          fi
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }} # Default GITHUB_TOKEN for deploying to gh-pages
+          publish_dir: main_repo/_build/html
+
+      - name: Clean up temporary checkouts
+        if: always()
+        run: |
+          rm -rf ./main_repo
+          rm -rf ./gh_storage_content
+
+# Notes for users:
+# - GH_TOKEN_FOR_ON_DEMAND_STORAGE: For 'store_notebooks' or 'store_and_rebuild_html' operations,
+#   this token needs write access to the 'gh-storage' branch. For 'rebuild_html_only', it only needs read.
+#   Consider using a dedicated fine-grained PAT. `secrets.GITHUB_TOKEN` can be used as a fallback
+#   if this workflow has `permissions: contents: write`.
+# - The `uses: ./.github/workflows/...` paths are for testing within this repo.
+#   Change to `uses: spacetelescope/notebook-ci-actions/.github/workflows/...@main` for external use.
+# - The 'rebuild_html_only' option assumes that `gh-storage` contains the desired notebooks.
+#   If you want to build HTML from the current checked-out (main branch) notebooks without testing,
+#   the `build_html_on_demand` job would need modification to source notebooks differently.
+#   (Current setup always uses gh-storage for on-demand HTML builds for consistency with post-merge builds).
